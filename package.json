@@ -12,7 +12,8 @@
     "mock:ploid": "node mock-ploid/server.mjs",
     "test:mock": "MOCK_LATENCY=0 MOCK_RUN_DELAY_MS=0 node mock-ploid/contract-test.mjs",
     "tunnel": "cloudflared tunnel --url http://localhost:3100",
-    "test:interview": "node scripts/test-interview.mjs"
+    "test:interview": "node scripts/test-interview.mjs",
+    "demo": "next build && next start -p 3100"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.12.0",

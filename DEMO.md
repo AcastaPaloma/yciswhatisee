@@ -2,7 +2,7 @@
 
 ## Before you go on (5 min)
 
-1. `npm run dev` (http://localhost:3100) and `npm run tunnel`. Put the tunnel URL in `.env` as `NEXT_PUBLIC_APP_URL`.
+1. `npm run tunnel`, put the tunnel URL in `.env` as `NEXT_PUBLIC_APP_URL`, then `npm run demo` (production build on http://localhost:3100; phones need this, the dev server blocks tunnel visitors).
 2. Presenter opens http://localhost:3100 full screen and zooms the browser to 110–125%.
 3. Three teammates sit outside with a phone or laptop and headphones. Each plays one candidate (they'll get Maya, Daniel, Noah).
 4. Dry run once: Find candidates → Interview the top 3 → teammates scan the QR codes → each taps **Start interview** and answers one question → **Wrap up & decide**.
