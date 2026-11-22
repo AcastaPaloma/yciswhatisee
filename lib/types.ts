@@ -61,6 +61,7 @@ export type Room = {
   currentQuestion?: string; // latest question Ava asked
   questionChangedAt?: number; // when the panel last swapped this room's question
   sentiment?: string; // latest live read on the candidate
+  listening?: boolean; // dashboard is playing this room out loud
 };
 
 export type Pivot = { t: number; criterionId: string; reason: string; question: string; separated?: boolean };

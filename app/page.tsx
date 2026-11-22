@@ -272,6 +272,65 @@ function Invites({ job, origin }: { job: Job; origin: string }) {
 }
 
 // ── 5. live panel ───────────────────────────────────────────────────────────
+// Plays one room out loud with ElevenLabs TTS (Ava + a voice per candidate).
+function useListener(job: Job) {
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const spoken = useRef(0);
+  const queue = useRef<{ text: string; voice: string }[]>([]);
+  const playing = useRef(false);
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const active = useRef<string | null>(null);
+
+  const playNext = async () => {
+    if (playing.current) return;
+    const next = queue.current.shift();
+    if (!next) return;
+    playing.current = true;
+    const owner = active.current;
+    try {
+      const res = await fetch("/api/tts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(next) });
+      if (res.ok && owner === active.current) {
+        const a = new Audio(URL.createObjectURL(await res.blob()));
+        audio.current = a;
+        await new Promise<void>((done) => {
+          a.onended = () => done();
+          a.onerror = () => done();
+          a.play().catch(() => done());
+        });
+      }
+    } finally {
+      playing.current = false;
+      if (owner === active.current) void playNext();
+    }
+  };
+
+  const toggle = (id: string) => {
+    const on = roomId !== id;
+    audio.current?.pause();
+    queue.current = [];
+    playing.current = false;
+    active.current = on ? id : null;
+    setRoomId(on ? id : null);
+    if (on) spoken.current = Math.max(0, job.rooms[id].transcript.length - 1); // start from the latest line
+    void post(`/api/rooms/${job.id}/${id}/listen`, { on });
+  };
+
+  useEffect(() => {
+    if (!roomId) return;
+    const room = job.rooms[roomId];
+    const idx = Object.keys(job.rooms).indexOf(roomId);
+    while (spoken.current < room.transcript.length) {
+      const l = room.transcript[spoken.current++];
+      queue.current.push({ text: l.text, voice: l.role === "agent" ? "ava" : `c${idx}` });
+    }
+    void playNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job, roomId]);
+
+  useEffect(() => () => audio.current?.pause(), []);
+  return { listeningTo: roomId, toggle };
+}
+
 function Live({ job, origin }: { job: Job; origin: string }) {
   const now = useNow(true);
   const rooms = Object.values(job.rooms);
@@ -280,6 +339,7 @@ function Live({ job, origin }: { job: Job; origin: string }) {
   const liveCount = rooms.filter((r) => r.status === "live").length;
   const insights = job.log.filter((l) => l.kind === "insight" || l.kind === "pivot" || (l.kind === "room" && /\d\/5/.test(l.text)));
   const [deciding, setDeciding] = useState(false);
+  const { listeningTo, toggle } = useListener(job);
   return (
     <div className="space-y-4 fade-up">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -307,7 +367,7 @@ function Live({ job, origin }: { job: Job; origin: string }) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_1fr_300px]">
         {rooms.map((r) => (
-          <RoomCard key={r.candidateId} job={job} room={r} cand={job.candidates.find((c) => c.id === r.candidateId)!} now={now} origin={origin} />
+          <RoomCard key={r.candidateId} job={job} room={r} cand={job.candidates.find((c) => c.id === r.candidateId)!} now={now} origin={origin} listening={listeningTo === r.candidateId} onListen={() => toggle(r.candidateId)} />
         ))}
         <aside className="rounded-xl border border-[#e9e9e7] p-4 lg:max-h-[560px] lg:overflow-y-auto">
           <p className="text-[13px] font-medium">💡 Live insights</p>
@@ -318,7 +378,7 @@ function Live({ job, origin }: { job: Job; origin: string }) {
   );
 }
 
-function RoomCard({ job, room, cand, now, origin }: { job: Job; room: Room; cand: Candidate; now: number; origin: string }) {
+function RoomCard({ job, room, cand, now, origin, listening, onListen }: { job: Job; room: Room; cand: Candidate; now: number; origin: string; listening: boolean; onListen: () => void }) {
   const changed = room.questionChangedAt && now - room.questionChangedAt < 8000;
   const lines = room.transcript.slice(-3);
   const url = `${origin}/room/${job.id}/${cand.id}`;
@@ -329,7 +389,14 @@ function RoomCard({ job, room, cand, now, origin }: { job: Job; room: Room; cand
         <p className="font-medium">{cand.name}</p>
         {room.sentiment && <span className="ml-auto rounded bg-[#e8deee] px-1.5 py-0.5 text-[11px] text-[#412454]">{room.sentiment}</span>}
       </div>
-      <p className="text-[12px] text-[#9b9a97]">{cand.title}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[12px] text-[#9b9a97]">{cand.title}</p>
+        {room.status !== "waiting" && (
+          <button onClick={onListen} className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[12px] ${listening ? "bg-[#2383e2] text-white" : "text-[#787774] hover:bg-[#f1f1ef]"}`}>
+            {listening ? "🔊 Listening" : "🔈 Listen"}
+          </button>
+        )}
+      </div>
 
       <div key={room.questionChangedAt ?? 0} className={`mt-3 rounded-lg bg-[#f7f7f5] p-3 ${changed ? "flash" : ""}`}>
         <p className="text-[11px] uppercase tracking-wide text-[#9b9a97]">{room.status === "ended" ? "Interview finished" : changed ? "🔄 New question from the panel" : "Ava is asking"}</p>

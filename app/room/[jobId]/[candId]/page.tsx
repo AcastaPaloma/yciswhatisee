@@ -75,7 +75,10 @@ function Room() {
       setInfo(data);
       conversation.startSession({ conversationToken: data.conversationToken, connectionType: "webrtc", dynamicVariables: data.dynamicVariables, userId: `${jobId}-${candId}` });
     } catch (e) {
-      setError((e as Error).message.includes("Permission") ? "Microphone access is needed for the voice interview." : (e as Error).message);
+      const err = e as Error;
+      setError(/Permission|NotAllowed|denied|NotFound|mediaDevices/i.test(`${err.name} ${err.message}`) || !navigator.mediaDevices
+        ? "Microphone blocked. Open this link in Chrome or Safari (not an in-app browser), allow the microphone, and try again."
+        : err.message);
     } finally {
       setStarting(false);
     }

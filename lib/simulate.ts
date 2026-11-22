@@ -19,6 +19,10 @@ type Bridge = { stop: () => void };
 const g = globalThis as unknown as { __sims?: Map<string, Bridge> };
 const sims = (g.__sims ??= new Map());
 
+// While someone listens on the dashboard, wait roughly as long as the line takes to speak.
+const speakMs = (text: string) => Math.min(20_000, 1200 + text.split(/\s+/).length * 370);
+const paced = (room: { listening?: boolean }, text: string, fn: () => void) => (room.listening ? setTimeout(fn, speakMs(text)) : fn());
+
 async function signedUrl(agentId: string) {
   const res = await fetch(`https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${agentId}`, {
     headers: { "xi-api-key": process.env.ELEVENLABS_API_KEY! },
@@ -77,7 +81,7 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
           setTimeout(stop, 1500); // candidate said goodbye; end both sides
           return;
         }
-        interviewer?.sendUserMessage(message);
+        paced(room, message, () => !finished && interviewer?.sendUserMessage(message));
       },
       onDisconnect: () => stop(),
       onError: (e) => console.error("candidate sim error", e),
@@ -100,7 +104,7 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
           const instruction = recordAssessment(job, candidateId, params as { criterion_id: string; score: number; evidence: string });
           if (instruction.startsWith("WRAP_UP")) {
             wrapped = true;
-            setTimeout(stop, 30_000); // safety net
+            setTimeout(stop, room.listening ? 60_000 : 30_000); // safety net
           }
           return instruction;
         },
@@ -117,7 +121,7 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
         say("agent", message);
         if (message.includes("?")) room.currentQuestion = (message.split(/(?<=[.!?])\s+/).filter((p) => p.includes("?")).at(-1) ?? message).trim();
         if (wrapped && ++afterWrap > 1) return; // only the first goodbye goes to the candidate
-        candidate?.sendUserMessage(message);
+        paced(room, message, () => !finished && candidate?.sendUserMessage(message));
       },
       onDisconnect: () => {
         if (room.status === "live") {
