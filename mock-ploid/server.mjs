@@ -17,6 +17,7 @@ import http from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PEOPLE } from "./people.mjs";
+import { synthesizeCandidates } from "./synth.mjs";
 
 const LATENCY = process.env.MOCK_LATENCY !== "0";
 const RUN_DELAY_MS = Number(process.env.MOCK_RUN_DELAY_MS ?? 4000);
@@ -69,7 +70,7 @@ const monthsBetween = (a, b) => {
   return (by - ay) * 12 + (bm - am);
 };
 
-const INDEX = PEOPLE.map((p) => {
+function indexPerson(p) {
   const tag = hash(p.slug).toString(36).slice(0, 3);
   const linkedin_url = `https://www.linkedin.com/in/${p.slug}-${tag}`;
   const person_id = `person_${p.slug.replace(/-/g, "_")}_${tag}`;
@@ -81,7 +82,8 @@ const INDEX = PEOPLE.map((p) => {
     body: tokens([p.bio, ...p.highlights, p.industry, p.company, ...p.oss.map((o) => o[2]), ...p.talks.map((t) => t[4])].join(" ")),
   };
   return { ...p, tag, linkedin_url, person_id, first, last, text };
-});
+}
+const INDEX = PEOPLE.map(indexPerson);
 // Rarity weights: a word most profiles share ("engineer") counts for little.
 const DF = new Map();
 for (const p of INDEX) for (const t of new Set([...p.text.title, ...p.text.skills, ...p.text.body])) DF.set(t, (DF.get(t) ?? 0) + 1);
@@ -89,6 +91,18 @@ const idf = (t) => Math.log((INDEX.length + 1) / ((DF.get(t) ?? 0) + 0.5));
 
 const byId = new Map(INDEX.map((p) => [p.person_id, p]));
 const byLinkedIn = new Map(INDEX.map((p) => [p.linkedin_url.replace(/\/$/, ""), p]));
+
+// Adds generated people to the live index so person/enrich lookups find them too.
+function addPeople(list) {
+  for (const raw of list) {
+    const p = indexPerson(raw);
+    INDEX.push(p);
+    byId.set(p.person_id, p);
+    byLinkedIn.set(p.linkedin_url, p);
+    for (const t of new Set([...p.text.title, ...p.text.skills, ...p.text.body])) DF.set(t, (DF.get(t) ?? 0) + 1);
+  }
+}
+const synthesizedFor = new Set();
 
 function findPerson(identifier = {}) {
   if (identifier.person_id) return byId.get(identifier.person_id);
@@ -113,7 +127,7 @@ function contacts(p) {
   const tmpl = (t) => t.replace("{slug}", p.slug).replace("{first}", f);
   return {
     work: EMAIL_OVERRIDE ? tmpl(EMAIL_OVERRIDE) : `${f}.${l}@${p.domain}`,
-    personal: h % 10 < 7 ? (EMAIL_OVERRIDE ? tmpl(EMAIL_OVERRIDE) : `${f}${l}${h % 90 + 10}@mail.example`) : null,
+    personal: h % 10 < 7 ? (EMAIL_OVERRIDE ? tmpl(EMAIL_OVERRIDE) : `${f}.${l}${h % 90 + 10}@gmail.com`) : null,
     phone: h % 2 === 0 ? `+1-555-01${String(h % 100).padStart(2, "0")}` : null, // 555-01xx is reserved for fiction
   };
 }
@@ -225,7 +239,7 @@ function bestEvidence(p, criterion) {
   return bestHits ? { quote: best, hits: bestHits, ratio: bestHits / total } : null;
 }
 
-async function search(body) {
+async function search(body, afterSynth = false) {
   const t0 = Date.now();
   const allowed = new Set(["query", "type", "category", "num_results", "offset", "criteria", "async", "webhook_url", "filters", "contents", "freshness"]);
   for (const k of Object.keys(body)) if (!allowed.has(k)) throw new ApiError(422, "validation_failed", `Unknown field: ${k}`);
@@ -248,7 +262,7 @@ async function search(body) {
   const hasPositive = query.trim() || INDEXED_FILTERS.some((k) => typeof filters[k] === "string" || filters[k]?.any_of);
   if (!hasPositive) throw new ApiError(422, "unsupported_request", "Provide a query or a positive title, company, location, seniority, or industry filter.");
 
-  await sleep({ instant: 120, fast: 350, auto: 1400, deep: 2800 }[type]);
+  if (!afterSynth) await sleep({ instant: 120, fast: 350, auto: 1400, deep: 2800 }[type]);
 
   const qTokens = queryTerms(query, criteria);
   let pool = [];
@@ -276,7 +290,7 @@ async function search(body) {
       }
       for (const [i, c] of criteria.entries()) {
         if (!pass) break;
-        const ev = bestEvidence(p, c);
+        const ev = p.evidence?.[c] ? { quote: p.evidence[c], ratio: 1 } : bestEvidence(p, c);
         if (!ev || ev.ratio < 0.34) { pass = false; break; }
         verification.push({ criterionId: `c${i + 1}`, criterion: c, status: "satisfied", reasoning: `Public profile evidence supports this: "${ev.quote}"`, references: [{ url: p.linkedin_url, source: "ploid", quote: ev.quote }] });
       }
@@ -285,6 +299,14 @@ async function search(body) {
     pool.push({ p, score: score + verification.length, filter_match, verification });
   }
   pool.sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name));
+
+  // Thin pool for this role: generate realistic people who fit it, then search again.
+  const synthKey = `${query}|${criteria.join("|")}`;
+  if (!afterSynth && query.trim() && pool.filter((x) => x.score > 0).length < 6 && !synthesizedFor.has(synthKey)) {
+    synthesizedFor.add(synthKey);
+    addPeople(synthesizeCandidates(query, criteria, 8, new Set(INDEX.map((p) => p.slug))));
+    return search(body, true);
+  }
 
   const start = verified ? 0 : offset ?? 0;
   const page = pool.slice(start, start + num_results);
@@ -352,7 +374,7 @@ function personRecord(p, include = []) {
   const record = {
     person_id: p.person_id,
     summary: [
-      `${p.name} is ${/^[AEIOU]/i.test(p.title) ? "an" : "a"} ${p.title} at ${p.company}, based in ${p.location} (current as of the profile observed ${OBSERVED.slice(0, 10)}).`,
+      `${p.name} is ${/^[AEIOU]/i.test(p.title) ? "an" : "a"} ${p.title} at ${p.company}, based in ${p.location}.`,
       p.bio,
       ...p.highlights,
       p.prev.length ? `Previously: ${p.prev.map(([t, co, , s, e]) => `${t} at ${co} (${s} to ${e})`).join("; ")}.` : "",

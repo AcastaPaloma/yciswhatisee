@@ -29,7 +29,10 @@ async function toCandidate(r: ploid.SearchResult): Promise<Candidate> {
     ...(p.positions ?? []).slice(0, 4).map((x) => `${x.title ?? ""} at ${x.company ?? ""} (${x.started ?? "?"} to ${x.ended ?? "present"}). ${x.description ?? ""}`),
   ].join(" ");
   const summary = report?.summary ?? fromSearch;
-  const highlights = summary.split(/(?<=\.)\s+/).filter((s) => /\d|led|built|shipped|founding|designed|grew|won|wrote/i.test(s) && !/^Limitations/.test(s)).slice(0, 4);
+  const highlights = summary
+    .split(/(?<=\.)\s+/)
+    .filter((s) => /\d|led|built|shipped|founding|designed|grew|won|wrote/i.test(s) && !/^Limitations| is an? .* at .*, based in /.test(s))
+    .slice(0, 4);
   return {
     id: shortId(p.person_id),
     personId: p.person_id,

@@ -62,11 +62,11 @@ async function extractWithClaude(jd: string): Promise<RoleSpec> {
 // ── deterministic fallback ────────────────────────────────────────────────
 const TECH = ["voice", "speech", "realtime", "audio", "latency", "llm", "agents", "tts", "asr", "streaming", "react", "typescript", "python", "go", "rust", "evals", "tool calling", "design", "figma", "sales", "recruiting", "devrel", "infrastructure", "ml", "machine learning", "healthcare"];
 
-const LEAD = /^(has|have|had|is|are|you|been|experience|experienced|strong|proven|deep|solid|excellent|shipped|built|builds|building|owns|a|an|the)\s+/i;
-const BOUNDARY = /^(in|with|who|that|to|for|and|on|at|from)$/i;
+const LEAD = /^(has|have|had|is|are|you|been|experience|experienced|strong|proven|deep|solid|excellent|shipped|built|builds|building|owns|designed|design and|led|ran|running|comfortable|a|an|the|and)\s+/i;
+const BOUNDARY = /^(in|with|who|that|to|for|and|on|at|from|end|or|across|during|when)$/i;
 
 function label(bullet: string) {
-  let s = bullet.replace(/[.;:]$/, "");
+  let s = bullet.replace(/[.;:]$/, "").replace(/^\d+\+?\s*years?\s+(of\s+)?(experience\s+)?/i, "");
   while (LEAD.test(s)) s = s.replace(LEAD, "");
   const out: string[] = [];
   for (const w of s.split(/\s+/)) {
@@ -122,7 +122,8 @@ export function extractHeuristic(jd: string): RoleSpec {
     summary: lines.find((l, i) => i > 0 && !/^[-*•]/.test(l) && l.length > 60) ?? `${title} at ${company}.`,
     mustHaves,
     niceToHaves: nice,
-    criteria: mustHaves.slice(0, 5).map(heuristicCriterion),
+    // "N+ years" bullets make poor interview questions; prefer concrete ones when there are enough.
+    criteria: (mustHaves.filter((b) => !/\d+\+?\s*years/i.test(b)).length >= 2 ? mustHaves.filter((b) => !/\d+\+?\s*years/i.test(b)) : mustHaves).slice(0, 5).map(heuristicCriterion),
     searchQuery: `${title} ${skills.join(" ")}`.trim(),
     source: "heuristic",
   };

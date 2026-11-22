@@ -56,7 +56,8 @@ export function openingInstruction(job: Job) {
 /** Spoken first question, used in Ava's greeting so short calls start immediately. */
 export function firstQuestion(job: Job) {
   const c = job.role!.criteria[0];
-  return `what's the most relevant thing you've done on ${c.name.toLowerCase()}, and what was your part?`;
+  const req = c.description.replace(/\.$/, "");
+  return `one thing we care about is "${req.charAt(0).toLowerCase() + req.slice(1)}". What's your strongest example of that, and what was your part?`;
 }
 
 /** Decide what this room should ask next. */
