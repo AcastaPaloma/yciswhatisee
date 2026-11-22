@@ -44,7 +44,7 @@ export default function Home() {
   const [origin, setOrigin] = useState("");
 
   useEffect(() => {
-    setOrigin(window.location.origin);
+    setOrigin(process.env.NEXT_PUBLIC_APP_URL || window.location.origin); // room links & QR codes point at the public tunnel
     const id = new URLSearchParams(window.location.search).get("job");
     if (id) setJobId(id);
   }, []);
