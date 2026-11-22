@@ -37,8 +37,10 @@ const TOOL = {
       criterion_id: { type: "string", description: "The id of the criterion the answer was about, e.g. c1." },
       score: { type: "integer", description: "1 = no evidence, 2 = weak, 3 = solid, 4 = strong with specifics, 5 = exceptional with concrete metrics and depth." },
       evidence: { type: "string", description: "One sentence summarizing what the candidate actually said that justifies the score." },
+      sentiment: { type: "string", description: "One or two words on how the candidate came across in that answer, e.g. confident, hesitant, energized, vague, precise." },
+      observation: { type: "string", description: "One short, specific real-time observation for the hiring panel, e.g. 'Gave real p95 numbers without being asked' or 'Deflected to the team when asked about their own part'." },
     },
-    required: ["criterion_id", "score", "evidence"],
+    required: ["criterion_id", "score", "evidence", "sentiment", "observation"],
   },
 };
 
@@ -55,7 +57,7 @@ Background from research: {{candidate_background}}
 {{opening_instruction}}
 
 # How to run the interview
-1. Greet the candidate warmly in one sentence, say this is a short voice interview of about six minutes, then follow the opening instruction.
+1. Your greeting already asked the first question. This is a very short interview: two or three questions in total. Keep it moving.
 2. Ask ONE question at a time. Keep each question under 35 words, conversational, and personalized with their background where it helps.
 3. When they answer, you may ask at most one short follow-up if the answer is vague. Then call submit_assessment for the criterion you just asked about, with a 1-5 score and one sentence of evidence that paraphrases what they said.
    Only ever assess the criterion your current instruction named. Never pre-score a criterion from an earlier answer, even if they touched on it.
@@ -71,13 +73,14 @@ Background from research: {{candidate_background}}
 const PLACEHOLDERS = {
   company_name: "Lumen Voice", role_title: "Founding AI Engineer", candidate_name: "there",
   candidate_background: "Unknown", criteria_list: "c1: Relevant experience", opening_instruction: "Ask about c1: their most relevant recent project.",
+  first_question: "what's the most relevant thing you've built recently, and what was your part?",
 };
 
 const agentBody = (toolId) => ({
   name: "Panel Interviewer (yciswhatisee)",
   conversation_config: {
     agent: {
-      first_message: "Hi {{candidate_name}}, I'm Ava, and I'll be your interviewer today for the {{role_title}} role. Can you hear me okay?",
+      first_message: "Hi {{candidate_name}}, I'm Ava, your interviewer for the {{role_title}} role. This will be quick. First: {{first_question}}",
       language: "en",
       prompt: { prompt: PROMPT, llm: LLM, tool_ids: [toolId], temperature: 0.4 },
       dynamic_variables: { dynamic_variable_placeholders: PLACEHOLDERS },
@@ -117,7 +120,7 @@ Your background (stay consistent with it, invent plausible details only where ne
 How you come across in interviews: {{style}}
 
 Rules:
-- Answer in first person, 2 to 4 sentences, like natural speech. No lists, no markdown.
+- Answer in first person, 1 to 3 sentences, like natural speech. No lists, no markdown.
 - Answer only what was asked. Never ask about the role or salary.
 - If the interviewer says goodbye, say a short thank-you and goodbye.`;
 

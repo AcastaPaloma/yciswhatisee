@@ -83,38 +83,39 @@ function Room() {
 
   const live = status === "connected";
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center px-6 py-10">
-      <div className="w-full max-w-2xl">
-        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Breakout room · {candId}</p>
-        <h1 className="mt-2 text-3xl font-semibold">{info ? `${info.role.title} interview` : "Your interview"}</h1>
-        <p className="mt-1 text-neutral-400">
-          {info ? `${info.role.company} · with Ava, an AI interviewer` : "A short voice interview with Ava, an AI interviewer. Use headphones if you can."}
+    <main className="min-h-screen bg-white text-[#37352f] flex flex-col items-center px-6 py-10">
+      <div className="w-full max-w-xl">
+        <p className="text-[12px] text-[#9b9a97]">Panel · interview room</p>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">{info ? `${info.role.title}` : "Your interview"}</h1>
+        <p className="mt-1 text-[15px] text-[#787774]">
+          {info ? `${info.role.company} · with Ava, an AI interviewer` : "A short voice interview with Ava, an AI interviewer. Headphones help."}
         </p>
 
-        <div className="mt-10 flex flex-col items-center gap-6">
-          <div className={`relative h-40 w-40 rounded-full transition-all duration-500 ${live ? (isSpeaking ? "scale-110 bg-indigo-500 shadow-[0_0_80px_rgba(99,102,241,0.7)]" : "bg-emerald-500/80 shadow-[0_0_50px_rgba(16,185,129,0.45)]") : "bg-neutral-800"}`}>
-            {live && <div className="absolute inset-0 rounded-full animate-ping bg-white/10" />}
+        <div className="mt-10 flex flex-col items-center gap-5">
+          <div className="relative grid h-36 w-36 place-items-center">
+            <div className={`absolute inset-0 rounded-full transition-all duration-500 ${live ? (isSpeaking ? "bg-[#2383e2]/25 scale-110 breathe" : "bg-[#448361]/20") : "bg-[#f1f1ef]"}`} />
+            <div className={`relative h-20 w-20 rounded-full transition-colors duration-500 ${live ? (isSpeaking ? "bg-[#2383e2]" : "bg-[#448361]") : "bg-[#d3d1cb]"}`} />
           </div>
-          <p className="text-sm text-neutral-400 h-5">
+          <p className="h-5 text-sm text-[#787774]">
             {status === "connecting" ? "Connecting…" : live ? (isSpeaking ? "Ava is speaking" : "Listening… go ahead") : status === "disconnected" && lines.length ? "Interview finished. Thank you!" : ""}
           </p>
           {!live ? (
-            <button onClick={start} disabled={starting || status === "connecting"} className="rounded-full bg-white px-8 py-3 font-medium text-neutral-950 hover:bg-neutral-200 disabled:opacity-50">
+            <button onClick={start} disabled={starting || status === "connecting"} className="rounded-lg bg-[#2383e2] px-6 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
               {starting || status === "connecting" ? "Starting…" : lines.length ? "Rejoin interview" : "Start interview"}
             </button>
           ) : (
-            <button onClick={() => conversation.endSession()} className="rounded-full border border-neutral-700 px-6 py-2 text-sm text-neutral-300 hover:bg-neutral-900">
+            <button onClick={() => conversation.endSession()} className="rounded-lg border border-[#e9e9e7] px-5 py-2 text-sm text-[#787774] hover:bg-[#f7f7f5]">
               End interview
             </button>
           )}
-          {error && <p className="text-sm text-rose-400">{error}</p>}
-          {live && guidance > 0 && <p className="text-xs text-neutral-500">Ava has received {guidance} live update{guidance > 1 ? "s" : ""} from the hiring panel.</p>}
+          {error && <p className="text-sm text-[#e03e3e]">{error}</p>}
+          {live && guidance > 0 && <p className="text-xs text-[#9b9a97]">Ava has received {guidance} live update{guidance > 1 ? "s" : ""} from the hiring panel.</p>}
         </div>
 
-        <div className="mt-10 space-y-3">
+        <div className="mt-10 space-y-2.5">
           {lines.slice(-12).map((l, i) => (
-            <div key={i} className={`flex ${l.role === "user" ? "justify-end" : "justify-start"}`}>
-              <p className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${l.role === "user" ? "bg-indigo-600/80" : "bg-neutral-800"}`}>{l.text}</p>
+            <div key={i} className={`flex fade-up ${l.role === "user" ? "justify-end" : "justify-start"}`}>
+              <p className={`max-w-[80%] rounded-2xl px-4 py-2 text-[14px] ${l.role === "user" ? "bg-[#e7f3f8]" : "bg-[#f7f7f5]"}`}>{l.text}</p>
             </div>
           ))}
         </div>

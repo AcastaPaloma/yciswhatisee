@@ -1,4 +1,4 @@
-import { runHiring } from "@/lib/agent";
+import { runSourcing } from "@/lib/agent";
 import { json } from "@/lib/http";
 import { latestJob, save, store } from "@/lib/store";
 import type { Job } from "@/lib/types";
@@ -15,10 +15,10 @@ export async function POST(req: Request) {
   if (!jd || jd.trim().length < 40) return json({ error: "Paste a job posting (at least a few lines)." }, 422);
   const job: Job = {
     id: Math.random().toString(36).slice(2, 8), createdAt: Date.now(), jd: jd.trim(), stage: "draft", candidates: [], backups: [],
-    log: [], rooms: {}, pivots: [], simulateOfferDecline: true, busy: false,
+    log: [], rooms: {}, pivots: [], simulateOfferDecline: false, busy: false, startedAt: Date.now(),
   };
   store.jobs.set(job.id, job);
   save();
-  void runHiring(job); // the agent keeps working after this request returns
+  void runSourcing(job); // the agent keeps working after this request returns
   return json({ id: job.id }, 201);
 }

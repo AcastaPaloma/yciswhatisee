@@ -1,66 +1,52 @@
 "use client";
 
+import QRCode from "qrcode";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Candidate, Job, LogEntry, Room } from "@/lib/types";
 import { SAMPLE_JD } from "@/lib/sample";
+import type { Candidate, Job, LogEntry, Room } from "@/lib/types";
 
-const STAGES: { key: Job["stage"][]; label: string }[] = [
-  { key: ["draft"], label: "Role" },
-  { key: ["sourcing"], label: "Source" },
-  { key: ["outreach"], label: "Outreach" },
-  { key: ["scheduled"], label: "Schedule" },
-  { key: ["interviewing"], label: "Interview" },
-  { key: ["deciding"], label: "Decide" },
-  { key: ["hired"], label: "Hired" },
-];
+// ── helpers ─────────────────────────────────────────────────────────────────
+const post = (url: string, body?: unknown) =>
+  fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
 
-const KIND_STYLE: Record<LogEntry["kind"], string> = {
-  think: "text-neutral-400",
-  tool: "text-sky-300",
-  email: "text-amber-200",
-  reply: "text-amber-300",
-  schedule: "text-emerald-300",
-  room: "text-neutral-300",
-  pivot: "text-fuchsia-300",
-  insight: "text-violet-300",
-  decision: "text-emerald-300",
-  error: "text-rose-400",
-};
-const KIND_ICON: Record<LogEntry["kind"], string> = {
-  think: "◦", tool: "⚙", email: "✉", reply: "↩", schedule: "◷", room: "●", pivot: "⇄", insight: "◆", decision: "★", error: "!",
-};
-
-const STATUS_STYLE: Partial<Record<Candidate["status"], string>> = {
-  accepted: "bg-emerald-500/15 text-emerald-300",
-  interviewing: "bg-indigo-500/20 text-indigo-200",
-  interviewed: "bg-indigo-500/10 text-indigo-300",
-  declined: "bg-neutral-800 text-neutral-500",
-  no_overlap: "bg-neutral-800 text-neutral-500",
-  offered: "bg-amber-500/20 text-amber-200",
-  offer_declined: "bg-rose-500/15 text-rose-300",
-  hired: "bg-emerald-500 text-neutral-950",
-  not_selected: "bg-neutral-800 text-neutral-500",
-};
-
-function scoreColor(s?: number) {
-  if (s === undefined) return "bg-neutral-900 text-neutral-600";
-  if (s >= 4.5) return "bg-emerald-500 text-neutral-950";
-  if (s >= 4) return "bg-emerald-600/70 text-white";
-  if (s >= 3) return "bg-amber-500/70 text-neutral-950";
-  return "bg-rose-600/70 text-white";
+function score(room: Room, id: string) {
+  const base = room.assessments.find((a) => a.criterionId === id && !a.tieBreaker)?.score;
+  const tie = room.assessments.filter((a) => a.criterionId === id && a.tieBreaker).at(-1)?.score;
+  if (base === undefined) return tie;
+  if (tie === undefined) return base;
+  return Math.round(((base + 2 * tie) / 3) * 10) / 10;
 }
 
+const scoreTag = (s?: number) =>
+  s === undefined ? "bg-[#f1f1ef] text-[#9b9a97]" : s >= 4 ? "bg-[#dbeddb] text-[#1c3829]" : s >= 3 ? "bg-[#fdecc8] text-[#402c1b]" : "bg-[#ffe2dd] text-[#5d1715]";
+
+const first = (name: string) => name.split(" ")[0];
+
+function useNow(active: boolean) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+const fmtDuration = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
+
+// ── page ────────────────────────────────────────────────────────────────────
 export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
-  const [jd, setJd] = useState(SAMPLE_JD);
-  const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState("");
 
   useEffect(() => {
     setOrigin(window.location.origin);
-    const fromUrl = new URLSearchParams(window.location.search).get("job");
-    if (fromUrl) setJobId(fromUrl);
+    const id = new URLSearchParams(window.location.search).get("job");
+    if (id) setJobId(id);
   }, []);
 
   useEffect(() => {
@@ -71,305 +57,397 @@ export default function Home() {
       if (res?.ok && alive) setJob(await res.json());
     };
     tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(tick, 800);
     return () => {
       alive = false;
       clearInterval(id);
     };
   }, [jobId]);
 
-  const start = async () => {
-    setError(null);
-    const res = await fetch("/api/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jd }) });
-    const data = await res.json();
-    if (!res.ok) return setError(data.error);
-    setJobId(data.id);
-    window.history.replaceState(null, "", `/?job=${data.id}`);
+  const open = (id: string | null) => {
+    setJob(null);
+    setJobId(id);
+    window.history.replaceState(null, "", id ? `/?job=${id}` : "/");
   };
 
-  const resume = async () => {
-    const res = await fetch("/api/jobs", { cache: "no-store" });
-    const { id } = await res.json();
-    if (id) {
-      setJobId(id);
-      window.history.replaceState(null, "", `/?job=${id}`);
-    }
-  };
+  const stage = job?.stage ?? "draft";
+  const anyJoined = !!job && Object.values(job.rooms).some((r) => r.status !== "waiting");
+  const showLive = !!job && (stage === "interviewing" || stage === "deciding" || (stage === "scheduled" && anyJoined));
+  const wide = showLive;
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-900 px-8 py-5 flex items-center justify-between">
-        <div className="flex items-baseline gap-3">
-          <span className="text-xl font-semibold tracking-tight">Panel</span>
-          <span className="text-sm text-neutral-500">The hiring agent that interviews every finalist at once</span>
-        </div>
+    <main className="min-h-screen flex flex-col bg-white text-[#37352f]">
+      <header className="flex items-center justify-between px-6 py-4 text-sm">
+        <button onClick={() => open(null)} className="flex items-center gap-2 font-medium">
+          <span className="grid h-6 w-6 place-items-center rounded border border-[#37352f] text-xs">P</span> Panel
+        </button>
         {job && (
-          <button onClick={() => { setJob(null); setJobId(null); window.history.replaceState(null, "", "/"); }} className="text-sm text-neutral-500 hover:text-neutral-300">
-            New role
-          </button>
+          <div className="flex items-center gap-4 text-[#787774]">
+            {job.busy && <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#2383e2] breathe" />Agent working</span>}
+            <button onClick={() => open(null)} className="hover:text-[#37352f]">+ New role</button>
+          </div>
         )}
       </header>
 
-      {!jobId ? (
-        <Intake jd={jd} setJd={setJd} start={start} resume={resume} error={error} />
-      ) : !job ? (
-        <p className="p-8 text-neutral-500">Loading…</p>
-      ) : (
-        <Dashboard job={job} origin={origin} />
-      )}
+      <div className="flex-1 flex items-start justify-center px-6 pb-16">
+        <div className={`w-full transition-all duration-700 ${wide ? "max-w-6xl" : "max-w-xl"} ${wide ? "mt-2" : "mt-[8vh]"}`}>
+          {!jobId ? (
+            <Intake onStarted={open} />
+          ) : !job ? (
+            <Box><p className="text-[#9b9a97]">Loading…</p></Box>
+          ) : stage === "draft" || stage === "sourcing" ? (
+            <Searching job={job} />
+          ) : stage === "sourced" ? (
+            <Shortlist job={job} />
+          ) : showLive ? (
+            <Live job={job} origin={origin} />
+          ) : stage === "outreach" || stage === "scheduled" ? (
+            <Invites job={job} origin={origin} />
+          ) : (
+            <Result job={job} />
+          )}
+        </div>
+      </div>
     </main>
   );
 }
 
-function Intake({ jd, setJd, start, resume, error }: { jd: string; setJd: (s: string) => void; start: () => void; resume: () => void; error: string | null }) {
+function Box({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <section className={`rounded-xl border border-[#e9e9e7] bg-white p-7 shadow-[0_1px_2px_rgba(15,15,15,0.04),0_8px_24px_rgba(15,15,15,0.05)] fade-up ${className}`}>{children}</section>;
+}
+
+// ── 1. intake ───────────────────────────────────────────────────────────────
+function Intake({ onStarted }: { onStarted: (id: string) => void }) {
+  const [jd, setJd] = useState(SAMPLE_JD);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const start = async () => {
+    setSending(true);
+    setError(null);
+    const res = await post("/api/jobs", { jd });
+    const data = await res.json();
+    setSending(false);
+    if (!res.ok) return setError(data.error);
+    onStarted(data.id);
+  };
   return (
-    <section className="mx-auto max-w-3xl px-8 py-16">
-      <h1 className="text-4xl font-semibold tracking-tight">Paste a job posting. Get a hire.</h1>
-      <p className="mt-3 text-neutral-400">
-        Panel extracts what the role needs, searches 2 billion profiles on Ploid, reaches out, books every finalist into the same slot, and interviews them all at
-        once in voice breakout rooms. Because the rooms run at the same time, it rewrites questions the moment one stops telling candidates apart.
-      </p>
-      <textarea value={jd} onChange={(e) => setJd(e.target.value)} rows={16} className="mt-8 w-full rounded-xl border border-neutral-800 bg-neutral-900 p-4 font-mono text-sm text-neutral-200 focus:border-neutral-600 focus:outline-none" />
-      <div className="mt-4 flex items-center gap-4">
-        <button onClick={start} className="rounded-full bg-white px-6 py-3 font-medium text-neutral-950 hover:bg-neutral-200">Start hiring</button>
-        <button onClick={resume} className="text-sm text-neutral-500 hover:text-neutral-300">Resume last run</button>
-        {error && <span className="text-sm text-rose-400">{error}</span>}
+    <Box>
+      <p className="text-3xl">🧭</p>
+      <h1 className="mt-3 text-2xl font-semibold tracking-tight">Who are you hiring?</h1>
+      <p className="mt-1 text-[15px] text-[#787774]">Paste the requirements. Panel finds the people, interviews the best ones at the same time, and comes back with a hire.</p>
+      <textarea value={jd} onChange={(e) => setJd(e.target.value)} rows={11} className="mt-5 w-full resize-none rounded-lg bg-[#f7f7f5] text-[#37352f] p-4 text-[14px] leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#2383e2]/30" />
+      <div className="mt-4 flex items-center justify-between">
+        <span className="text-sm text-[#e03e3e]">{error}</span>
+        <button onClick={start} disabled={sending} className="rounded-lg bg-[#2383e2] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
+          {sending ? "Starting…" : "Find candidates →"}
+        </button>
       </div>
-    </section>
+      <ResumeLink />
+    </Box>
   );
 }
 
-function Dashboard({ job, origin }: { job: Job; origin: string }) {
-  const stageIdx = STAGES.findIndex((s) => s.key.includes(job.stage));
-  const rooms = Object.values(job.rooms);
-  return (
-    <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-0">
-      <div className="px-8 py-6 space-y-8 min-w-0">
-        <ol className="flex flex-wrap gap-2">
-          {STAGES.map((s, i) => (
-            <li key={s.label} className={`rounded-full px-3 py-1 text-xs ${i < stageIdx ? "bg-neutral-800 text-neutral-300" : i === stageIdx ? "bg-white text-neutral-950 font-medium" : "bg-neutral-900 text-neutral-600"}`}>
-              {i + 1}. {s.label}
-            </li>
-          ))}
-          {job.busy && <li className="px-3 py-1 text-xs text-neutral-500 animate-pulse">agent working…</li>}
-        </ol>
+function ResumeLink() {
+  const resume = async () => {
+    const { id } = await (await fetch("/api/jobs", { cache: "no-store" })).json();
+    if (id) window.location.href = `/?job=${id}`;
+  };
+  return <button onClick={resume} className="mt-3 text-xs text-[#9b9a97] hover:text-[#787774]">Resume last run</button>;
+}
 
-        {job.role && <RoleCard job={job} />}
-        {rooms.length > 0 && <LivePanel job={job} origin={origin} />}
-        {job.candidates.length > 0 && <Candidates job={job} />}
+// ── 2. searching ────────────────────────────────────────────────────────────
+function Searching({ job }: { job: Job }) {
+  const now = useNow(true);
+  const elapsed = now - (job.startedAt ?? job.createdAt);
+  const scanned = Math.min(2_000_000_000, Math.round(2_000_000_000 * (1 - Math.exp(-elapsed / 2500))));
+  const steps = job.log.filter((l) => l.kind === "think" || l.kind === "tool" || l.kind === "error").slice(-5);
+  return (
+    <Box>
+      <p className="text-3xl">🔍</p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight">Searching</h2>
+      <p className="mt-1 text-[15px] text-[#787774]">
+        <span className="tabular-nums font-medium text-[#37352f]">{scanned.toLocaleString()}</span> profiles on Ploid
+      </p>
+      <div className="mt-5 h-1 overflow-hidden rounded-full bg-[#f1f1ef]">
+        <div className="h-full w-2/5 rounded-full bg-[#2383e2] scan-bar" />
       </div>
-      <Activity log={job.log} />
+      {job.role && (
+        <div className="mt-5 flex flex-wrap gap-2 fade-up">
+          {job.role.criteria.map((c) => (
+            <span key={c.id} className="rounded bg-[#e7f3f8] px-2 py-0.5 text-[13px] text-[#1d4a5c]">{c.name}</span>
+          ))}
+        </div>
+      )}
+      <ul className="mt-5 space-y-2 text-[14px]">
+        {steps.map((s, i) => (
+          <li key={s.t + s.text} className={`fade-up flex gap-2 ${i === steps.length - 1 ? "text-[#37352f]" : "text-[#9b9a97]"}`}>
+            <span>{s.kind === "tool" ? "✓" : s.kind === "error" ? "!" : "·"}</span>
+            {s.text}
+          </li>
+        ))}
+      </ul>
+    </Box>
+  );
+}
+
+// ── 3. shortlist ────────────────────────────────────────────────────────────
+function Shortlist({ job }: { job: Job }) {
+  const [sending, setSending] = useState(false);
+  return (
+    <Box>
+      <p className="text-3xl">✨</p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight">Top 5 for {job.role?.title}</h2>
+      <p className="mt-1 text-[15px] text-[#787774]">Out of 2,000,000,000 profiles, verified against public evidence.</p>
+      <ol className="mt-5 divide-y divide-[#f1f1ef]">
+        {job.candidates.map((c, i) => (
+          <li key={c.id} className="fade-up py-3" style={{ animationDelay: `${i * 140}ms` }}>
+            <div className="flex items-baseline gap-3">
+              <span className="w-4 text-sm text-[#9b9a97]">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{c.name} <span className="font-normal text-[#787774]">· {c.title}, {c.company}</span></p>
+                <p className="mt-0.5 text-[13px] text-[#787774] line-clamp-1">{c.matchReasons[0] ?? c.highlights[0]}</p>
+              </div>
+              {i < 3 && <span className="rounded bg-[#dbeddb] px-1.5 py-0.5 text-[11px] text-[#1c3829]">Top 3</span>}
+            </div>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-5 flex justify-end">
+        <button onClick={() => { setSending(true); post(`/api/jobs/${job.id}/invite`); }} disabled={sending} className="rounded-lg bg-[#2383e2] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
+          {sending ? "Inviting…" : "Interview the top 3 →"}
+        </button>
+      </div>
+    </Box>
+  );
+}
+
+// ── 4. invites + room links ─────────────────────────────────────────────────
+function Qr({ url }: { url: string }) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    QRCode.toDataURL(url, { margin: 1, width: 220, color: { dark: "#37352f", light: "#ffffff" } }).then(setSrc);
+  }, [url]);
+  return src ? <img src={src} alt="Room QR code" className="h-28 w-28 rounded" /> : <div className="h-28 w-28" />;
+}
+
+function Invites({ job, origin }: { job: Job; origin: string }) {
+  const panel = job.candidates.filter((c) => ["contacted", "interviewing", "accepted"].includes(c.status));
+  const simulateAll = () => post(`/api/jobs/${job.id}/simulate`);
+  return (
+    <Box>
+      <p className="text-3xl">✉️</p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight">{job.stage === "outreach" ? "Inviting the top 3" : "Rooms are open"}</h2>
+      <p className="mt-1 text-[15px] text-[#787774]">Each finalist gets their own voice room with Ava, an ElevenLabs interviewer. All three run at the same time.</p>
+      <div className="mt-5 space-y-3">
+        {panel.map((c, i) => {
+          const room = job.rooms[c.id];
+          const url = `${origin}/room/${job.id}/${c.id}`;
+          return (
+            <div key={c.id} className="fade-up flex items-center gap-4 rounded-lg bg-[#f7f7f5] p-3" style={{ animationDelay: `${i * 120}ms` }}>
+              {room ? <Qr url={url} /> : <div className="grid h-28 w-28 place-items-center text-2xl">✉️</div>}
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{c.name}</p>
+                <p className="text-[13px] text-[#787774]">{c.email}</p>
+                <p className="mt-1 text-[13px]">{room ? <span className="text-[#448361]">✓ Accepted · waiting to join</span> : <span className="text-[#9b9a97]">Invite sent…</span>}</p>
+                {room && (
+                  <div className="mt-2 flex gap-3 text-[13px]">
+                    <a href={url} target="_blank" className="text-[#2383e2] hover:underline">Open room</a>
+                    <button onClick={() => navigator.clipboard.writeText(url)} className="text-[#787774] hover:text-[#37352f]">Copy link</button>
+                    <button onClick={() => post(`/api/jobs/${job.id}/simulate`, { candidateId: c.id })} className="text-[#787774] hover:text-[#37352f]">Simulate</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {Object.keys(job.rooms).length > 0 && (
+        <div className="mt-5 flex items-center justify-between text-[13px] text-[#9b9a97]">
+          <span>The dashboard goes live as soon as someone joins.</span>
+          <button onClick={simulateAll} className="text-[#787774] hover:text-[#37352f]">Simulate all with AI candidates</button>
+        </div>
+      )}
+    </Box>
+  );
+}
+
+// ── 5. live panel ───────────────────────────────────────────────────────────
+function Live({ job, origin }: { job: Job; origin: string }) {
+  const now = useNow(true);
+  const rooms = Object.values(job.rooms);
+  const criteria = job.role!.criteria;
+  const latestPivot = job.pivots.at(-1);
+  const liveCount = rooms.filter((r) => r.status === "live").length;
+  const insights = job.log.filter((l) => l.kind === "insight" || l.kind === "pivot" || (l.kind === "room" && /\d\/5/.test(l.text)));
+  const [deciding, setDeciding] = useState(false);
+  return (
+    <div className="space-y-4 fade-up">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[13px] text-[#787774]">{job.role!.company} · live panel</p>
+          <h2 className="text-2xl font-semibold tracking-tight">{job.role!.title}</h2>
+        </div>
+        <div className="flex items-center gap-4 text-[13px] text-[#787774]">
+          <span className="flex items-center gap-1.5"><span className={`h-2 w-2 rounded-full ${liveCount ? "bg-[#e03e3e] breathe" : "bg-[#d3d1cb]"}`} />{liveCount} rooms live</span>
+          <span className="tabular-nums">⏱ {fmtDuration(now - (job.interviewsStartedAt ?? now))}</span>
+          <span>🔄 {job.pivots.length} questions swapped</span>
+          <button onClick={() => { setDeciding(true); post(`/api/jobs/${job.id}/decide`); }} disabled={deciding || job.stage === "deciding"} className="rounded-lg bg-[#37352f] px-4 py-2 font-medium text-white hover:bg-black disabled:opacity-50">
+            {deciding || job.stage === "deciding" ? "Deciding…" : "Wrap up & decide →"}
+          </button>
+        </div>
+      </div>
+
+      {latestPivot && (
+        <div key={latestPivot.t} className="rounded-xl border border-[#f5d9b8] bg-[#fbecdd] p-4 fade-up">
+          <p className="text-[13px] font-medium text-[#854c1d]">🔄 Panel changed the question in every room · {criteria.find((c) => c.id === latestPivot.criterionId)?.name}</p>
+          <p className="mt-1 text-[14px] text-[#5c3b1b]">{latestPivot.reason}</p>
+          <p className="mt-2 border-l-2 border-[#d9730d] pl-3 text-[15px] text-[#37352f]">“{latestPivot.question}”</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_1fr_300px]">
+        {rooms.map((r) => (
+          <RoomCard key={r.candidateId} job={job} room={r} cand={job.candidates.find((c) => c.id === r.candidateId)!} now={now} origin={origin} />
+        ))}
+        <aside className="rounded-xl border border-[#e9e9e7] p-4 lg:max-h-[560px] lg:overflow-y-auto">
+          <p className="text-[13px] font-medium">💡 Live insights</p>
+          <Feed entries={insights} />
+        </aside>
+      </div>
     </div>
   );
 }
 
-function RoleCard({ job }: { job: Job }) {
-  const role = job.role!;
+function RoomCard({ job, room, cand, now, origin }: { job: Job; room: Room; cand: Candidate; now: number; origin: string }) {
+  const changed = room.questionChangedAt && now - room.questionChangedAt < 8000;
+  const lines = room.transcript.slice(-3);
+  const url = `${origin}/room/${job.id}/${cand.id}`;
   return (
-    <section>
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-2xl font-semibold">{role.title}</h2>
-        <span className="text-sm text-neutral-500">{role.company} · criteria by {role.source === "claude" ? "Claude" : "built-in parser"}</span>
+    <div className="flex flex-col rounded-xl border border-[#e9e9e7] p-4">
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 rounded-full ${room.status === "live" ? "bg-[#448361] breathe" : room.status === "ended" ? "bg-[#d3d1cb]" : "bg-[#dfab01]"}`} />
+        <p className="font-medium">{cand.name}</p>
+        {room.sentiment && <span className="ml-auto rounded bg-[#e8deee] px-1.5 py-0.5 text-[11px] text-[#412454]">{room.sentiment}</span>}
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {role.criteria.map((c) => (
-          <span key={c.id} title={c.description} className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm">
-            <span className="text-neutral-500 mr-1">{c.id}</span>
-            {c.name}
-          </span>
+      <p className="text-[12px] text-[#9b9a97]">{cand.title}</p>
+
+      <div key={room.questionChangedAt ?? 0} className={`mt-3 rounded-lg bg-[#f7f7f5] p-3 ${changed ? "flash" : ""}`}>
+        <p className="text-[11px] uppercase tracking-wide text-[#9b9a97]">{room.status === "ended" ? "Interview finished" : changed ? "🔄 New question from the panel" : "Ava is asking"}</p>
+        <p className="mt-1 text-[14px] leading-snug">{room.status === "ended" ? `${room.assessments.length} answers assessed` : room.currentQuestion ?? (room.status === "waiting" ? "Waiting for the candidate to join…" : "…")}</p>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {job.role!.criteria.map((c) => {
+          const s = score(room, c.id);
+          return (
+            <span key={c.id} className={`rounded px-1.5 py-0.5 text-[12px] transition-colors duration-700 ${scoreTag(s)}`}>
+              {c.name} {s ?? "–"}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex-1 space-y-1.5 text-[13px]">
+        {lines.map((l, i) => (
+          <p key={l.t + i} className="fade-up line-clamp-2">
+            <span className="text-[#9b9a97]">{l.role === "user" ? first(cand.name) : "Ava"}:</span> {l.text}
+          </p>
         ))}
       </div>
-    </section>
-  );
-}
-
-function criterionScoreClient(room: Room, id: string) {
-  const base = room.assessments.find((a) => a.criterionId === id && !a.tieBreaker)?.score;
-  const tie = room.assessments.filter((a) => a.criterionId === id && a.tieBreaker).at(-1)?.score;
-  if (base === undefined) return tie;
-  if (tie === undefined) return base;
-  return Math.round(((base + 2 * tie) / 3) * 10) / 10;
-}
-
-function LivePanel({ job, origin }: { job: Job; origin: string }) {
-  const criteria = job.role!.criteria;
-  const rooms = Object.values(job.rooms);
-  const byId = (id: string) => job.candidates.find((c) => c.id === id)!;
-  const pivotIds = new Set(job.pivots.map((p) => p.criterionId));
-  const [copied, setCopied] = useState<string | null>(null);
-  const decided = !!job.decision;
-
-  const decide = () => fetch(`/api/jobs/${job.id}/decide`, { method: "POST" });
-  const simulate = (candidateId?: string) =>
-    fetch(`/api/jobs/${job.id}/simulate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId }) });
-  const anyWaiting = rooms.some((r) => r.status === "waiting");
-  const toggleDecline = () =>
-    fetch(`/api/jobs/${job.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ simulateOfferDecline: !job.simulateOfferDecline }) });
-
-  return (
-    <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-6">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold">Live panel {job.slot && <span className="text-neutral-500 font-normal">· {job.slot}</span>}</h3>
-          <p className="text-sm text-neutral-500">One ElevenLabs interviewer per room. Scores arrive as candidates answer; the panel rewrites questions across rooms.</p>
-        </div>
-        {!decided && (
-          <div className="flex items-center gap-4 shrink-0">
-            <label className="flex items-center gap-2 text-xs text-neutral-500 cursor-pointer">
-              <input type="checkbox" checked={job.simulateOfferDecline} onChange={toggleDecline} className="accent-indigo-500" />
-              First offer gets declined
-            </label>
-            {anyWaiting && (
-              <button onClick={() => simulate()} className="rounded-full border border-neutral-700 px-4 py-2 text-sm text-neutral-300 hover:bg-neutral-900" title="Fill empty rooms with AI candidates played by a second ElevenLabs agent">
-                Simulate candidates
-              </button>
-            )}
-            <button onClick={decide} disabled={job.busy} className="rounded-full bg-white px-4 py-2 text-sm font-medium text-neutral-950 hover:bg-neutral-200 disabled:opacity-40">
-              End interviews & decide
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-5 overflow-x-auto">
-        <table className="w-full border-separate border-spacing-1 text-sm">
-          <thead>
-            <tr className="text-left text-xs text-neutral-500">
-              <th className="font-normal px-2">Candidate</th>
-              {criteria.map((c) => (
-                <th key={c.id} className="font-normal px-2 text-center" title={c.description}>
-                  {c.name}
-                  {pivotIds.has(c.id) && <span className="ml-1 text-fuchsia-300" title="Pivoted to a tie-breaker">⇄</span>}
-                </th>
-              ))}
-              <th className="font-normal px-2">Room</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rooms.map((r) => {
-              const c = byId(r.candidateId);
-              const url = `${origin}/room/${job.id}/${r.candidateId}`;
-              const last = r.transcript.at(-1);
-              return (
-                <tr key={r.candidateId}>
-                  <td className="px-2 py-2 align-top">
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${r.status === "live" ? "bg-emerald-400 animate-pulse" : r.status === "ended" ? "bg-neutral-600" : "bg-amber-400"}`} />
-                      <span className="font-medium">{c.name}</span>
-                    </div>
-                    <p className="text-xs text-neutral-500 truncate max-w-[220px]">{last ? `${last.role === "user" ? c.name.split(" ")[0] : "Ava"}: ${last.text}` : r.status === "waiting" ? "Waiting to join" : ""}</p>
-                  </td>
-                  {criteria.map((k) => {
-                    const s = criterionScoreClient(r, k.id);
-                    const tie = r.assessments.some((a) => a.criterionId === k.id && a.tieBreaker);
-                    const ev = r.assessments.filter((a) => a.criterionId === k.id).map((a) => `${a.tieBreaker ? "Tie-breaker" : "Base"} ${a.score}/5: ${a.evidence}`).join("\n");
-                    return (
-                      <td key={k.id} title={ev} className={`rounded-md text-center font-semibold transition-colors duration-500 ${scoreColor(s)}`}>
-                        {s ?? "·"}
-                        {tie && <sup className="ml-0.5">⇄</sup>}
-                      </td>
-                    );
-                  })}
-                  <td className="px-2 align-top">
-                    <div className="flex gap-2 text-xs">
-                      <a href={url} target="_blank" className="text-indigo-300 hover:underline">open</a>
-                      {r.status === "waiting" && !decided && (
-                        <button onClick={() => simulate(r.candidateId)} className="text-neutral-500 hover:text-neutral-300">simulate</button>
-                      )}
-                      <button onClick={() => { navigator.clipboard.writeText(url); setCopied(r.candidateId); setTimeout(() => setCopied(null), 1500); }} className="text-neutral-500 hover:text-neutral-300">
-                        {copied === r.candidateId ? "copied" : "copy link"}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {job.pivots.length > 0 && (
-        <div className="mt-5 space-y-2">
-          {job.pivots.map((p) => (
-            <div key={p.t} className="rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/5 px-4 py-3 text-sm">
-              <p className="text-fuchsia-200 font-medium">⇄ Pivot on {criteria.find((c) => c.id === p.criterionId)?.name}</p>
-              <p className="text-neutral-400 mt-1">{p.reason}</p>
-              <p className="text-neutral-200 mt-1">New question in every room: “{p.question}”</p>
-            </div>
-          ))}
+      {room.status === "waiting" && (
+        <div className="mt-3 flex gap-3 text-[12px]">
+          <a href={url} target="_blank" className="text-[#2383e2] hover:underline">Open room</a>
+          <button onClick={() => post(`/api/jobs/${job.id}/simulate`, { candidateId: cand.id })} className="text-[#787774] hover:text-[#37352f]">Simulate</button>
         </div>
       )}
-
-      {job.decision && (
-        <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-          <p className="font-medium text-emerald-200">{job.stage === "hired" ? "Hired" : "Decision"}</p>
-          <p className="text-sm text-neutral-300 mt-1">{job.decision.summary}</p>
-          <ol className="mt-3 space-y-1 text-sm">
-            {job.decision.ranking.map((r, i) => {
-              const c = byId(r.candidateId);
-              const offer = job.decision!.offers.find((o) => o.candidateId === r.candidateId);
-              return (
-                <li key={r.candidateId} className="flex items-center gap-3">
-                  <span className="w-5 text-neutral-500">{i + 1}.</span>
-                  <span className="w-44">{c.name}</span>
-                  <span className="w-16 text-neutral-400">{r.total.toFixed(2)}</span>
-                  {offer && <span className={`rounded px-2 py-0.5 text-xs ${offer.outcome === "accepted" ? "bg-emerald-500 text-neutral-950" : offer.outcome === "declined" ? "bg-rose-500/20 text-rose-300" : "bg-amber-500/20 text-amber-200"}`}>offer {offer.outcome}</span>}
-                </li>
-              );
-            })}
-          </ol>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
-function Candidates({ job }: { job: Job }) {
-  return (
-    <section>
-      <h3 className="text-lg font-semibold">Candidates <span className="text-neutral-500 font-normal text-sm">from Ploid</span></h3>
-      <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {job.candidates.map((c) => (
-          <article key={c.id} className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-medium">{c.name}</p>
-                <p className="text-sm text-neutral-400 truncate">{c.title} · {c.company}</p>
-                <p className="text-xs text-neutral-600">{c.location}{c.email ? ` · ${c.email}` : ""}</p>
-              </div>
-              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${STATUS_STYLE[c.status] ?? "bg-neutral-800 text-neutral-300"}`}>{c.status.replace("_", " ")}</span>
-            </div>
-            {(c.matchReasons[0] || c.highlights[0]) && <p className="mt-2 text-sm text-neutral-300 line-clamp-2">{c.matchReasons[0] ?? c.highlights[0]}</p>}
-            {c.reply && <p className="mt-2 text-xs text-neutral-500 italic line-clamp-2">“{c.reply}”</p>}
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function Activity({ log }: { log: LogEntry[] }) {
+function Feed({ entries }: { entries: LogEntry[] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState<number | null>(null);
   useEffect(() => {
-    ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: "smooth" });
-  }, [log.length]);
-  const fmt = useMemo(() => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" }), []);
+    ref.current?.lastElementChild?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [entries.length]);
+  const icon = (k: LogEntry["kind"]) => (k === "pivot" ? "🔄" : k === "insight" ? "💡" : "🎙️");
   return (
-    <aside className="border-l border-neutral-900 bg-neutral-950 xl:h-[calc(100vh-69px)] xl:sticky xl:top-0 flex flex-col">
-      <p className="px-5 pt-5 pb-3 text-xs uppercase tracking-[0.2em] text-neutral-500">Agent activity</p>
-      <div ref={ref} className="flex-1 overflow-y-auto px-5 pb-6 space-y-2">
-        {log.map((e, i) => (
-          <div key={i} className={`text-sm ${KIND_STYLE[e.kind]}`}>
-            <button onClick={() => setOpen(open === i ? null : i)} className="text-left w-full flex gap-2">
-              <span className="w-4 shrink-0 text-center">{KIND_ICON[e.kind]}</span>
-              <span className="flex-1">{e.text}</span>
-              <span className="shrink-0 text-[10px] text-neutral-600 pt-1">{fmt.format(e.t)}</span>
-            </button>
-            {e.detail && open === i && <pre className="ml-6 mt-1 whitespace-pre-wrap rounded-lg bg-neutral-900 p-3 text-xs text-neutral-400 font-sans">{e.detail}</pre>}
-          </div>
-        ))}
+    <div ref={ref} className="mt-3 space-y-2.5">
+      {entries.length === 0 && <p className="text-[13px] text-[#9b9a97]">Insights appear as candidates answer.</p>}
+      {entries.map((e) => (
+        <p key={e.t + e.text} className={`fade-up text-[13px] leading-snug ${e.kind === "pivot" ? "rounded bg-[#fbecdd] p-2 text-[#5c3b1b]" : e.kind === "insight" ? "text-[#37352f]" : "text-[#787774]"}`}>
+          {icon(e.kind)} {e.text}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+// ── 6. result + offer ───────────────────────────────────────────────────────
+function Result({ job }: { job: Job }) {
+  const d = job.decision;
+  const [sending, setSending] = useState(false);
+  const byId = useMemo(() => Object.fromEntries(job.candidates.map((c) => [c.id, c])), [job.candidates]);
+  if (!d) return <Box><p className="text-[#9b9a97]">Comparing every answer…</p></Box>;
+  const winner = byId[job.decision!.offers.find((o) => o.outcome === "accepted")?.candidateId ?? d.ranking[0]?.candidateId];
+  const hired = job.stage === "hired";
+  const offerPending = d.offers.some((o) => o.outcome === "pending");
+  return (
+    <Box>
+      <p className="text-3xl">{hired ? "🎉" : "🏆"}</p>
+      <p className="mt-3 text-[13px] text-[#787774]">{hired ? "Role filled" : `Best candidate for ${job.role!.title}`}</p>
+      <h2 className="text-3xl font-semibold tracking-tight">{winner?.name ?? "No winner"}</h2>
+      <p className="text-[15px] text-[#787774]">{winner?.title} · {winner?.company}</p>
+
+      {!hired && d.reasons.length > 0 && (
+        <ul className="mt-4 space-y-1.5 text-[14px]">
+          {d.reasons.map((r, i) => <li key={i} className="fade-up flex gap-2" style={{ animationDelay: `${i * 120}ms` }}><span>✓</span>{r}</li>)}
+        </ul>
+      )}
+
+      <div className="mt-5 grid grid-cols-3 gap-3 text-center">
+        <Stat value={fmtDuration(d.stats.elapsedMs)} label="requirements → decision" />
+        <Stat value={`${d.stats.interviews} at once`} label={`interviews in ${d.stats.parallelMinutes} min`} />
+        <Stat value={`~${d.stats.sequentialHours} h`} label="of interviewer time saved" />
       </div>
-    </aside>
+      {d.stats.pivots > 0 && <p className="mt-3 text-center text-[13px] text-[#787774]">🔄 {d.stats.pivots} question{d.stats.pivots > 1 ? "s" : ""} swapped live when answers stopped separating people</p>}
+
+      {!hired && (
+        <ol className="mt-5 space-y-1 text-[14px]">
+          {d.ranking.map((r, i) => {
+            const offer = d.offers.find((o) => o.candidateId === r.candidateId);
+            return (
+              <li key={r.candidateId} className="flex items-center gap-3">
+                <span className="w-4 text-[#9b9a97]">{i + 1}</span>
+                <span className="flex-1">{byId[r.candidateId]?.name}</span>
+                {offer && <span className="text-[12px] text-[#787774]">offer {offer.outcome}</span>}
+                <span className="tabular-nums text-[#787774]">{r.total.toFixed(1)}</span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      {d.offerLetter && (
+        <pre className="mt-5 whitespace-pre-wrap rounded-lg bg-[#f7f7f5] p-4 font-sans text-[13px] leading-relaxed text-[#37352f] fade-up">{d.offerLetter}</pre>
+      )}
+      {hired ? (
+        <p className="mt-4 rounded-lg bg-[#dbeddb] px-4 py-3 text-[14px] text-[#1c3829] fade-up">✓ {winner?.name} accepted the offer.</p>
+      ) : (
+        <div className="mt-5 flex justify-end">
+          <button onClick={() => { setSending(true); post(`/api/jobs/${job.id}/offer`); }} disabled={sending || offerPending || job.busy} className="rounded-lg bg-[#2383e2] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
+            {offerPending || sending ? "Sending offer…" : "Send offer letter →"}
+          </button>
+        </div>
+      )}
+    </Box>
+  );
+}
+
+function Stat({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="rounded-lg bg-[#f7f7f5] px-2 py-3">
+      <p className="text-lg font-semibold tabular-nums">{value}</p>
+      <p className="text-[12px] text-[#787774]">{label}</p>
+    </div>
   );
 }

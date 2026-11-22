@@ -43,7 +43,7 @@ export type Candidate = {
 export type LogKind = "think" | "tool" | "email" | "reply" | "schedule" | "room" | "pivot" | "insight" | "decision" | "error";
 export type LogEntry = { t: number; kind: LogKind; text: string; detail?: string };
 
-export type Assessment = { criterionId: string; score: number; evidence: string; t: number; tieBreaker: boolean };
+export type Assessment = { criterionId: string; score: number; evidence: string; t: number; tieBreaker: boolean; sentiment?: string; observation?: string };
 
 export type Room = {
   candidateId: string;
@@ -58,6 +58,9 @@ export type Room = {
   questionCount: number;
   wrapped: boolean;
   lastInstruction?: string;
+  currentQuestion?: string; // latest question Ava asked
+  questionChangedAt?: number; // when the panel last swapped this room's question
+  sentiment?: string; // latest live read on the candidate
 };
 
 export type Pivot = { t: number; criterionId: string; reason: string; question: string; separated?: boolean };
@@ -66,9 +69,12 @@ export type Decision = {
   ranking: { candidateId: string; total: number; perCriterion: Record<string, number> }[];
   summary: string;
   offers: { candidateId: string; outcome: "pending" | "accepted" | "declined"; t: number }[];
+  reasons: string[]; // why the winner won, from interview evidence
+  stats: { elapsedMs: number; interviews: number; parallelMinutes: number; sequentialHours: number; pivots: number };
+  offerLetter?: string;
 };
 
-export type Stage = "draft" | "sourcing" | "outreach" | "scheduled" | "interviewing" | "deciding" | "hired";
+export type Stage = "draft" | "sourcing" | "sourced" | "outreach" | "scheduled" | "interviewing" | "deciding" | "decided" | "hired";
 
 export type Job = {
   id: string;
@@ -84,5 +90,7 @@ export type Job = {
   pivots: Pivot[];
   decision?: Decision;
   simulateOfferDecline: boolean;
+  startedAt?: number; // when the run began
+  interviewsStartedAt?: number;
   busy: boolean;
 };

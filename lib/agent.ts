@@ -6,36 +6,17 @@ import { log, save, sleep } from "./store";
 import type { Candidate, Job } from "./types";
 
 // The hiring agent: owns the loop from job posting to signed offer.
-// Outreach and replies are simulated for the demo; sourcing goes through the
-// Ploid API (mock or live), interviews through ElevenLabs.
+// Sourcing goes through the Ploid API (mock or live), interviews through
+// ElevenLabs. Outreach replies and the offer response are simulated.
 
 export const PANEL_SIZE = Number(process.env.PANEL_SIZE ?? 3);
 const SHORTLIST = 5;
-const PACE = Number(process.env.AGENT_PACE_MS ?? 700); // so the activity feed is watchable
+const INTERVIEW_CRITERIA = Number(process.env.INTERVIEW_CRITERIA ?? 2); // short calls for the demo
+const PACE = Number(process.env.AGENT_PACE_MS ?? 600); // so the activity feed is watchable
 
 const shortId = (personId: string) => personId.replace(/^person_/, "").split("_")[0];
 
-function slotLabels() {
-  const fmt = (d: Date, day: string) =>
-    `${day} ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" })} ET`;
-  const now = new Date();
-  const base = new Date(Math.ceil((now.getTime() + 10 * 60_000) / (30 * 60_000)) * 30 * 60_000);
-  const plus = (m: number) => new Date(base.getTime() + m * 60_000);
-  const tomorrow = (h: number) => {
-    const d = new Date(now.getTime() + 864e5);
-    d.setHours(h, 0, 0, 0);
-    return d;
-  };
-  return {
-    shared: fmt(base, "Today"),
-    later: fmt(plus(60), "Today"),
-    other: fmt(plus(150), "Today"),
-    tmrwAm: fmt(tomorrow(10), "Tomorrow"),
-    tmrwPm: fmt(tomorrow(16), "Tomorrow"),
-  };
-}
-
-async function toCandidate(job: Job, r: ploid.SearchResult): Promise<Candidate> {
+async function toCandidate(r: ploid.SearchResult): Promise<Candidate> {
   const p = r.person;
   const [report, email] = await Promise.all([ploid.person(p.person_id).catch(() => null), ploid.enrich(p.person_id).catch(() => null)]);
   const summary = report?.summary ?? "";
@@ -48,7 +29,7 @@ async function toCandidate(job: Job, r: ploid.SearchResult): Promise<Candidate> 
     company: p.company ?? "",
     location: p.location ?? "",
     linkedinUrl: p.linkedin_url ?? "",
-    matchReasons: (r.verification ?? []).map((v) => v.reasoning.replace(/^Public profile evidence supports this: /, "")),
+    matchReasons: (r.verification ?? []).map((v) => v.reasoning.replace(/^Public profile evidence supports this: /, "").replace(/^"|"$/g, "")),
     background: summary,
     highlights,
     interests: (report?.signals.personal_interests ?? []).map((i) => i.interest),
@@ -57,45 +38,23 @@ async function toCandidate(job: Job, r: ploid.SearchResult): Promise<Candidate> 
   };
 }
 
-function draftEmail(job: Job, c: Candidate, slots: ReturnType<typeof slotLabels>) {
-  const role = job.role!;
-  const first = c.name.split(" ")[0];
-  const hook = c.highlights[0] ? ` I read that you ${c.highlights[0].replace(/^[A-Z]/, (m) => m.toLowerCase()).replace(/\.$/, "")}, which is exactly the kind of work we need.` : "";
-  const interest = c.interests[0] ? ` (Also, fellow ${c.interests[0].toLowerCase()} fan here.)` : "";
-  return {
-    subject: `${role.title} at ${role.company}: 15-minute voice interview?`,
-    body: `Hi ${first},\n\nI'm the hiring agent for ${role.company}. We're hiring a ${role.title}.${hook}${interest}\n\nWe run a short, AI-led voice interview so you hear back the same day. Would any of these work?\n- ${slots.shared}\n- ${slots.later}\n- ${slots.tmrwAm}\n\nBest,\nThe ${role.company} hiring agent`,
-  };
-}
-
-// Deterministic simulated replies: most accept the shared slot, one declines, one can't make it.
-function simulateReply(i: number, c: Candidate, slots: ReturnType<typeof slotLabels>) {
-  const first = c.name.split(" ")[0];
-  const pattern = ["accept", "decline", "accept", "no_overlap", "accept", "accept", "accept"][i % 7];
-  if (pattern === "decline") return { status: "declined" as const, availability: [], reply: `Thanks for reaching out! I'm happy where I am right now, but keep me in mind next year. — ${first}` };
-  if (pattern === "no_overlap") return { status: "no_overlap" as const, availability: [slots.tmrwPm], reply: `Sounds interesting. I'm traveling today; the only time I have is ${slots.tmrwPm}. — ${first}` };
-  const avail = i % 2 ? [slots.shared, slots.tmrwAm] : [slots.shared, slots.later];
-  return { status: "accepted" as const, availability: avail, reply: `Hi! Yes, I'd love to chat. ${avail.join(" or ")} works for me. — ${first}` };
-}
-
-export async function runHiring(job: Job) {
+/** Step 1: understand the role and find the top candidates. Stops at the shortlist. */
+export async function runSourcing(job: Job) {
   if (job.busy) return;
   job.busy = true;
+  job.startedAt ??= Date.now();
   try {
-    // 1. Understand the role
-    if (!job.role) {
-      log(job, "think", "Reading the job posting and extracting what the role needs");
-      const { role, note } = await extractRole(job.jd);
-      job.role = role;
-      if (note) log(job, "error", note);
-      log(job, "tool", `Extracted ${role.criteria.length} interview criteria for ${role.title}`, role.criteria.map((c) => `${c.id}. ${c.name}: ${c.description}`).join("\n"));
-      await sleep(PACE);
-    }
-    const role = job.role!;
-
-    // 2. Source from Ploid
     job.stage = "sourcing";
-    log(job, "think", `Searching the Ploid people index for "${role.searchQuery}", verified against the top criteria`);
+    log(job, "think", "Reading the hiring requirements");
+    const { role, note } = await extractRole(job.jd);
+    role.criteria = role.criteria.slice(0, INTERVIEW_CRITERIA);
+    job.role = role;
+    if (note) log(job, "error", note);
+    log(job, "tool", `Extracted what matters: ${role.criteria.map((c) => c.name).join(", ")}`, role.criteria.map((c) => `${c.id}. ${c.name}: ${c.description}`).join("\n"));
+    await sleep(PACE);
+
+    log(job, "think", "Searching 2,000,000,000 profiles on Ploid");
+    const exclude = role.company && role.company !== "our team" ? { filters: { company: { none_of: [role.company] } } } : {}; // don't poach from ourselves
     const attempts = [
       { type: "auto", criteria: role.criteria.slice(0, 2).map((c) => c.description) },
       { type: "auto", criteria: role.criteria.slice(0, 1).map((c) => c.description) },
@@ -103,71 +62,67 @@ export async function runHiring(job: Job) {
     ];
     let results: ploid.SearchResult[] = [];
     for (const [i, a] of attempts.entries()) {
-      const exclude = role.company && role.company !== "our team" ? { filters: { company: { none_of: [role.company] } } } : {}; // don't poach from ourselves
       const res = await ploid.search({ query: role.searchQuery, type: a.type, num_results: 12, ...exclude, ...(a.criteria.length ? { criteria: a.criteria } : {}) });
-      log(job, "tool", `POST /v1/search (${a.type}${a.criteria.length ? `, ${a.criteria.length} verified criteria` : ""}) → ${res.data.results.length} matches from ${res.data.rows_indexed.toLocaleString()} profiles`, `Ploid mode: ${ploid.ploidMode}. Credits used: ${res.meta.credits_charged}.`);
+      log(job, "tool", `Ploid search → ${res.data.results.length} verified matches`, `POST /v1/search (${a.type}${a.criteria.length ? `, ${a.criteria.length} criteria checked against public evidence` : ""}). Mode: ${ploid.ploidMode}.`);
       results = res.data.results;
       if (results.length >= SHORTLIST || i === attempts.length - 1) break;
-      log(job, "think", "Too few verified matches. Relaxing the criteria and searching again.");
+      log(job, "think", "Too few verified matches. Relaxing one criterion and searching again.");
     }
     if (!results.length) {
-      log(job, "error", "No candidates found. Try a broader job posting.");
+      log(job, "error", "No candidates found. Try broader requirements.");
       job.stage = "draft";
       return;
     }
-
-    log(job, "think", `Researching the top ${Math.min(SHORTLIST, results.length)} candidates (POST /v1/person) and finding their work emails (POST /v1/enrich)`);
-    const top = await Promise.all(results.slice(0, SHORTLIST).map((r) => toCandidate(job, r)));
-    job.candidates = top;
-    job.backups = []; // further matches are researched only if someone declines
-    for (const c of top) log(job, "tool", `Shortlisted ${c.name}: ${c.title} at ${c.company}`, c.matchReasons.join("\n") || c.highlights[0]);
-    save();
-    await sleep(PACE);
-
-    // 3. Outreach (simulated)
-    job.stage = "outreach";
-    const slots = slotLabels();
-    let backupQueue = results.slice(SHORTLIST);
-    const contact = async (c: Candidate, i: number) => {
-      c.outreach = draftEmail(job, c, slots);
-      c.status = "contacted";
-      log(job, "email", `Emailed ${c.name} <${c.email ?? "no email found"}>`, `Subject: ${c.outreach.subject}\n\n${c.outreach.body}`);
-      await sleep(PACE);
-      const r = simulateReply(i, c, slots);
-      Object.assign(c, { status: r.status, availability: r.availability, reply: r.reply });
-      log(job, "reply", `${c.name} ${r.status === "accepted" ? "accepted" : r.status === "declined" ? "declined" : "can't make the shared time"}`, r.reply);
-    };
-    for (const [i, c] of job.candidates.entries()) await contact(c, i);
-
-    let accepted = job.candidates.filter((c) => c.status === "accepted");
-    let i = job.candidates.length;
-    while (accepted.length < PANEL_SIZE && backupQueue.length) {
-      log(job, "think", `Only ${accepted.length} of ${PANEL_SIZE} panel seats filled. Reaching out to the next best match.`);
-      const next = await toCandidate(job, backupQueue.shift()!);
-      job.candidates.push(next);
-      await contact(next, i++);
-      accepted = job.candidates.filter((c) => c.status === "accepted");
-    }
-
-    // 4. Schedule one shared slot, one breakout room per candidate
-    const panel = accepted.slice(0, PANEL_SIZE);
-    const common = panel.reduce<string[]>((acc, c) => acc.filter((s) => c.availability?.includes(s)), panel[0]?.availability ?? []);
-    job.slot = common[0] ?? slots.shared;
-    for (const c of panel) {
-      c.status = "interviewing";
-      job.rooms[c.id] = newRoom(c.id);
-    }
-    job.stage = "scheduled";
-    log(job, "schedule", `Booked a simultaneous panel for ${job.slot}: ${panel.map((c) => c.name).join(", ")}`, `Everyone gets their own breakout room with an ElevenLabs interviewer. The panel orchestrator watches all ${panel.length} rooms live and rewrites the questions as answers come in.`);
+    log(job, "think", `Researching the top ${Math.min(SHORTLIST, results.length)}: work history, evidence, contact details`);
+    job.candidates = await Promise.all(results.slice(0, SHORTLIST).map(toCandidate));
+    for (const c of job.candidates) log(job, "tool", `Found ${c.name}, ${c.title} at ${c.company}`, c.matchReasons.join("\n") || c.highlights[0]);
+    job.stage = "sourced";
   } catch (e) {
     log(job, "error", `Agent error: ${(e as Error).message}`);
+    job.stage = "draft";
   } finally {
     job.busy = false;
     save();
   }
 }
 
-// ── decision + offer loop ─────────────────────────────────────────────────
+/** Step 2: invite the top candidates and open one breakout room each. */
+export async function invite(job: Job) {
+  if (job.busy || !job.role) return;
+  job.busy = true;
+  try {
+    job.stage = "outreach";
+    const panel = job.candidates.slice(0, PANEL_SIZE);
+    for (const c of panel) {
+      const first = c.name.split(" ")[0];
+      const hook = c.highlights[0] ? ` I saw that you ${c.highlights[0].replace(/^[A-Z]/, (m) => m.toLowerCase()).replace(/\.$/, "")}.` : "";
+      c.outreach = {
+        subject: `${job.role.title} at ${job.role.company}: quick voice interview?`,
+        body: `Hi ${first},\n\nI'm the hiring agent for ${job.role.company}.${hook} We're hiring a ${job.role.title} and you're on our shortlist.\n\nWe run a short voice interview with all finalists at the same time, so you hear back today. Join here: [interview link]\n\nThe ${job.role.company} hiring agent`,
+      };
+      c.status = "contacted";
+      log(job, "email", `Invited ${c.name} <${c.email ?? "email not found"}>`, `Subject: ${c.outreach.subject}\n\n${c.outreach.body}`);
+      await sleep(PACE / 2);
+    }
+    await sleep(PACE);
+    for (const c of panel) {
+      c.status = "interviewing";
+      c.reply = "I'm in. Joining now!";
+      job.rooms[c.id] = newRoom(c.id);
+      log(job, "reply", `${c.name} accepted`, c.reply);
+      await sleep(PACE / 2);
+    }
+    for (const c of job.candidates.slice(PANEL_SIZE)) c.status = "not_selected";
+    job.slot = "Now";
+    job.stage = "scheduled";
+    log(job, "schedule", `Opened ${panel.length} breakout rooms. Ava will interview everyone at the same time.`, "Each room has its own ElevenLabs interviewer. The panel watches every room and changes the questions as answers come in.");
+  } finally {
+    job.busy = false;
+    save();
+  }
+}
+
+// ── decision + offer ──────────────────────────────────────────────────────
 export function rank(job: Job) {
   const criteria = job.role!.criteria;
   return Object.values(job.rooms)
@@ -178,13 +133,13 @@ export function rank(job: Job) {
         if (s !== undefined) perCriterion[c.id] = s;
       }
       const vals = criteria.map((c, i) => ({ s: perCriterion[c.id], w: criteria.length - i * 0.5 }));
-      const covered = vals.filter((v) => v.s !== undefined);
-      const total = covered.length ? covered.reduce((a, v) => a + v.s! * v.w, 0) / vals.reduce((a, v) => a + v.w, 0) : 0; // missing = 0
+      const total = vals.reduce((a, v) => a + (v.s ?? 0) * v.w, 0) / vals.reduce((a, v) => a + v.w, 0); // unanswered counts as 0
       return { candidateId: room.candidateId, total: Math.round(total * 100) / 100, perCriterion };
     })
     .sort((a, b) => b.total - a.total);
 }
 
+/** Step 3: end the interviews and pick the best candidate. */
 export async function decide(job: Job) {
   if (job.busy) return;
   job.busy = true;
@@ -192,40 +147,71 @@ export async function decide(job: Job) {
     job.stage = "deciding";
     stopAll(job.id);
     for (const r of Object.values(job.rooms)) if (r.status !== "ended") r.status = "ended";
+    log(job, "think", "Comparing every answer across all rooms");
+    await sleep(PACE * 2);
     const ranking = rank(job);
     const name = (id: string) => job.candidates.find((c) => c.id === id)!.name;
-    const pivotNote = job.pivots.length ? ` ${job.pivots.length} live pivot${job.pivots.length > 1 ? "s" : ""} replaced questions that no longer separated candidates.` : "";
-    const summary = ranking.length
-      ? `${name(ranking[0].candidateId)} ranks first (${ranking[0].total.toFixed(2)}/5)${ranking[1] ? `, ahead of ${name(ranking[1].candidateId)} (${ranking[1].total.toFixed(2)})` : ""}.${pivotNote}`
+    const best = ranking[0];
+    const bestRoom = best ? job.rooms[best.candidateId] : undefined;
+    const reasons = (bestRoom?.assessments ?? [])
+      .slice()
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((a) => a.evidence)
+      .filter(Boolean);
+    const elapsedMs = Date.now() - (job.startedAt ?? job.createdAt);
+    const interviews = Object.values(job.rooms).filter((r) => r.assessments.length).length || Object.keys(job.rooms).length;
+    const parallelMinutes = Math.max(1, Math.round((Date.now() - (job.interviewsStartedAt ?? Date.now())) / 60_000));
+    const summary = best
+      ? `${name(best.candidateId)} is the strongest fit (${best.total.toFixed(1)}/5)${ranking[1] ? `, ahead of ${name(ranking[1].candidateId)} (${ranking[1].total.toFixed(1)})` : ""}.`
       : "No interviews were completed.";
-    job.decision = { ranking, summary, offers: [] };
-    log(job, "decision", `Panel complete. ${summary}`, ranking.map((r, i) => `${i + 1}. ${name(r.candidateId)}: ${r.total.toFixed(2)}`).join("\n"));
+    job.decision = {
+      ranking,
+      summary,
+      offers: [],
+      reasons,
+      // Typical funnel: ~45 min per interview + ~30 min scheduling each, done one after another.
+      stats: { elapsedMs, interviews, parallelMinutes, sequentialHours: Math.round(interviews * 1.25 * 10) / 10, pivots: job.pivots.length },
+    };
     for (const c of job.candidates) if (c.status === "interviewing") c.status = "interviewed";
+    job.stage = "decided";
+    log(job, "decision", summary, ranking.map((r, i) => `${i + 1}. ${name(r.candidateId)}: ${r.total.toFixed(2)}`).join("\n"));
+  } finally {
+    job.busy = false;
     save();
-    await sleep(PACE);
+  }
+}
 
-    // Keep going until someone signs.
-    for (const [i, r] of ranking.entries()) {
+/** Step 4: send the offer; if it's declined, move down the ranking until someone accepts. */
+export async function sendOffer(job: Job) {
+  if (job.busy || !job.decision) return;
+  job.busy = true;
+  try {
+    const role = job.role!;
+    for (const [i, r] of job.decision.ranking.entries()) {
       const c = job.candidates.find((x) => x.id === r.candidateId)!;
+      if (c.status === "offer_declined") continue;
+      const letter = `Hi ${c.name.split(" ")[0]},\n\nThe panel loved talking with you today. We'd like to offer you the role of ${role.title} at ${role.company}.\n\nWhat stood out: ${job.decision.reasons[0] ?? "your answers"}\n\nReply to accept and we'll send the paperwork.\n\nThe ${role.company} team`;
+      job.decision.offerLetter = letter;
       c.status = "offered";
       job.decision.offers.push({ candidateId: c.id, outcome: "pending", t: Date.now() });
-      log(job, "email", `Sent an offer to ${c.name}`, `Subject: Offer: ${job.role!.title} at ${job.role!.company}\n\nHi ${c.name.split(" ")[0]}, the panel loved talking with you today...`);
+      log(job, "email", `Sent the offer letter to ${c.name}`, letter);
       save();
-      await sleep(PACE * 2);
+      await sleep(PACE * 3);
       const declines = job.simulateOfferDecline && i === 0;
       job.decision.offers.at(-1)!.outcome = declines ? "declined" : "accepted";
       if (declines) {
         c.status = "offer_declined";
-        log(job, "reply", `${c.name} declined the offer (accepted a counter-offer)`, "The agent keeps running: moving to the next-ranked candidate.");
+        log(job, "reply", `${c.name} declined (accepted a counter-offer). Moving to the next candidate.`);
         continue;
       }
       c.status = "hired";
       for (const o of job.candidates) if (o.status === "interviewed") o.status = "not_selected";
       job.stage = "hired";
-      log(job, "decision", `${c.name} accepted. Role filled. 🎉`, `Sent friendly closing notes to the other candidates.`);
+      log(job, "decision", `${c.name} accepted. Role filled.`);
       return;
     }
-    log(job, "think", "Every finalist declined. Going back to sourcing for a new panel.");
+    log(job, "think", "Every finalist declined. Going back to sourcing.");
   } finally {
     job.busy = false;
     save();

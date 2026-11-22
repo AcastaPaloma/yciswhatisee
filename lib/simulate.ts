@@ -1,5 +1,5 @@
 import { Conversation } from "@elevenlabs/client";
-import { candidateBackground, openingInstruction, recordAssessment } from "./panel";
+import { candidateBackground, firstQuestion, openingInstruction, recordAssessment } from "./panel";
 import { getJob, log, save } from "./store";
 import type { Job } from "./types";
 
@@ -7,6 +7,7 @@ import type { Job } from "./types";
 // talks to a second ElevenLabs agent that plays the candidate from their Ploid
 // profile. Same tool calls, same panel orchestration, same pivots as a voice room.
 
+// Kept short for demos: answers in 1-3 sentences.
 const STYLES = [
   "Very strong. You give specific numbers, name tradeoffs, and tell the story of failures honestly.",
   "Strong and confident, but you sometimes stay high level and forget to give concrete numbers unless pushed.",
@@ -92,6 +93,7 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
         candidate_background: candidateBackground(cand),
         criteria_list: job.role.criteria.map((c) => `${c.id}: ${c.name} — ${c.description}`).join("\n"),
         opening_instruction: openingInstruction(job),
+        first_question: firstQuestion(job),
       },
       clientTools: {
         submit_assessment: async (params: Record<string, unknown>) => {
@@ -107,11 +109,13 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
         room.status = "live";
         room.conversationId = conversationId;
         if (job.stage === "scheduled") job.stage = "interviewing";
+        job.interviewsStartedAt ??= Date.now();
         log(job, "room", `${cand.name} joined their breakout room (simulated candidate)`);
       },
       onMessage: ({ message, role }) => {
         if (role !== "agent" || !message.trim() || finished) return;
         say("agent", message);
+        if (message.includes("?")) room.currentQuestion = (message.split(/(?<=[.!?])\s+/).filter((p) => p.includes("?")).at(-1) ?? message).trim();
         if (wrapped && ++afterWrap > 1) return; // only the first goodbye goes to the candidate
         candidate?.sendUserMessage(message);
       },

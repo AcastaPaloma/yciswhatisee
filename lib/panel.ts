@@ -6,8 +6,9 @@ import type { Assessment, Candidate, Criterion, Job, Room } from "./types";
 // rooms run at the same time, the panel can see when a criterion stops
 // separating candidates and push a harder, shared tie-breaker into every room.
 
-const STRONG = 4; // score at or above which a candidate counts as "strong"
-const MAX_EXTRA = 2; // tie-breaker questions per room beyond the base criteria
+const FLOOR = 3; // a criterion only pivots if everyone at least passes it
+const CLOSE = 1; // ...and the scores are within this many points: the question isn't separating anyone
+const MAX_EXTRA = Number(process.env.MAX_TIE_BREAKERS ?? 1); // extra tie-breakers per room once base criteria are done
 
 export function newRoom(candidateId: string): Room {
   return { candidateId, status: "waiting", transcript: [], assessments: [], pending: [], delivered: 0, tieBreakersAsked: [], questionCount: 0, wrapped: false };
@@ -44,11 +45,18 @@ function tieBreakerQuestion(job: Job, c: Criterion) {
 }
 
 function pivotInstruction(c: Criterion, question: string) {
-  return `PIVOT: every candidate so far is already strong on ${c.id} (${c.name}), so the basic question no longer separates them. Ask this harder, distinguishing question and assess the answer as ${c.id}: "${question}"`;
+  return `PIVOT: candidates so far are too close to separate on ${c.id} (${c.name}), so the basic question no longer separates them. Ask this harder, distinguishing question and assess the answer as ${c.id}: "${question}"`;
 }
 
 export function openingInstruction(job: Job) {
-  return questionFor(job.role!.criteria[0]);
+  const c = job.role!.criteria[0];
+  return `You already asked the first question (about ${c.id}, ${c.name}) in your greeting. Listen to the answer, then assess it as ${c.id}.`;
+}
+
+/** Spoken first question, used in Ava's greeting so short calls start immediately. */
+export function firstQuestion(job: Job) {
+  const c = job.role!.criteria[0];
+  return `what's the most relevant thing you've done on ${c.name.toLowerCase()}, and what was your part?`;
 }
 
 /** Decide what this room should ask next. */
@@ -101,22 +109,23 @@ function detectSaturation(job: Job, criterionId: string, triggeredBy: string) {
   const scored = rooms.map((r) => ({ r, s: baseScore(r, criterionId) })).filter((x): x is { r: Room; s: number } => x.s !== undefined);
   const needed = Math.min(2, rooms.length);
   if (scored.length < needed || needed < 2) return;
-  if (!scored.every((x) => x.s >= STRONG)) {
-    const spread = Math.max(...scored.map((x) => x.s)) - Math.min(...scored.map((x) => x.s));
+  const spread = Math.max(...scored.map((x) => x.s)) - Math.min(...scored.map((x) => x.s));
+  if (spread > CLOSE || Math.min(...scored.map((x) => x.s)) < FLOOR) {
     if (spread >= 2 && scored.length === rooms.length)
-      log(job, "insight", `${crit(job, criterionId)!.name} is separating candidates (spread of ${spread} points). No pivot needed.`);
+      log(job, "insight", `${crit(job, criterionId)!.name} is separating candidates (spread of ${spread} points). Keeping the plan.`);
     return;
   }
   const c = crit(job, criterionId)!;
   const question = tieBreakerQuestion(job, c);
   const who = scored.map((x) => `${cand(job, x.r.candidateId).name.split(" ")[0]} ${x.s}/5`).join(", ");
-  const reason = `${scored.length} of ${rooms.length} candidates scored ${STRONG}+ on ${c.name} (${who}). That question no longer tells them apart.`;
+  const reason = `${who} on ${c.name}. The answers are too close to tell them apart, so this question has stopped being useful.`;
   job.pivots.push({ t: Date.now(), criterionId, reason, question });
-  log(job, "pivot", `Pivot on ${c.name}: every candidate so far is strong, so a tie-breaker goes into all rooms`, `${reason}\nNew question: "${question}"`);
+  log(job, "pivot", `Swapping the ${c.name} question in every room: candidates are too close`, `${reason}\nNew question: "${question}"`);
   for (const r of rooms) {
     if (r.status !== "live" || r.wrapped || r.candidateId === triggeredBy) continue; // the triggering room gets it in its tool reply
     // Rooms that haven't reached this criterion get the tie-breaker in their tool reply when they do.
     if (baseScore(r, criterionId) === undefined || r.tieBreakersAsked.includes(criterionId)) continue;
+    r.questionChangedAt = Date.now();
     r.pending.push(`PANEL UPDATE: all candidates so far are strong on ${c.name}. Before moving on, ask this distinguishing question and assess it as ${c.id}: "${question}"`);
     r.tieBreakersAsked.push(criterionId);
   }
@@ -135,7 +144,7 @@ function checkSeparation(job: Job, criterionId: string) {
   log(job, "insight", `The tie-breaker on ${crit(job, criterionId)!.name} separated the candidates: ${who}`);
 }
 
-export function recordAssessment(job: Job, candidateId: string, a: { criterion_id: string; score: number; evidence: string }) {
+export function recordAssessment(job: Job, candidateId: string, a: { criterion_id: string; score: number; evidence: string; sentiment?: string; observation?: string }) {
   const room = job.rooms[candidateId];
   if (!room) return "WRAP_UP: this room is not part of the panel.";
   const c = crit(job, a.criterion_id) ?? job.role!.criteria.find((x) => x.name.toLowerCase() === String(a.criterion_id).toLowerCase());
@@ -143,7 +152,10 @@ export function recordAssessment(job: Job, candidateId: string, a: { criterion_i
   const score = Math.max(1, Math.min(5, Math.round(Number(a.score) || 1)));
   const hasBase = baseScore(room, c.id) !== undefined;
   const isTie = hasBase && room.tieBreakersAsked.includes(c.id);
-  const entry: Assessment = { criterionId: c.id, score, evidence: String(a.evidence ?? "").slice(0, 400), t: Date.now(), tieBreaker: isTie };
+  const entry: Assessment = { criterionId: c.id, score, evidence: String(a.evidence ?? "").slice(0, 400), t: Date.now(), tieBreaker: isTie,
+    sentiment: a.sentiment ? String(a.sentiment).slice(0, 40) : undefined, observation: a.observation ? String(a.observation).slice(0, 200) : undefined };
+  if (entry.sentiment) room.sentiment = entry.sentiment;
+  if (entry.observation) log(job, "insight", `${cand(job, candidateId).name.split(" ")[0]}${entry.sentiment ? ` · ${entry.sentiment}` : ""}: ${entry.observation}`);
   if (hasBase && !isTie) {
     // The interviewer re-scored after a follow-up: replace the base score.
     const i = room.assessments.findIndex((x) => x.criterionId === c.id && !x.tieBreaker);
@@ -162,6 +174,7 @@ export function recordAssessment(job: Job, candidateId: string, a: { criterion_i
   else checkSeparation(job, c.id);
   const next = nextInstruction(job, room);
   room.lastInstruction = next;
+  if (next.includes("PIVOT")) room.questionChangedAt = Date.now();
   save();
   return next;
 }

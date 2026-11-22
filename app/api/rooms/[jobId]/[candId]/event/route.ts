@@ -3,6 +3,12 @@ import { getJob, log, save } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
+// The last question in an agent message, for the dashboard's "now asking" line.
+function lastQuestion(text: string) {
+  const parts = text.split(/(?<=[.!?])\s+/).filter((p) => p.includes("?"));
+  return (parts.at(-1) ?? text).trim();
+}
+
 type Body = { type: "status"; status: "live" | "ended"; conversationId?: string } | { type: "message"; role: "agent" | "user"; text: string };
 
 export async function POST(req: Request, { params }: { params: Promise<{ jobId: string; candId: string }> }) {
@@ -17,6 +23,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ jobId: 
       room.status = "live";
       room.conversationId = body.conversationId ?? room.conversationId;
       if (job.stage === "scheduled") job.stage = "interviewing";
+      job.interviewsStartedAt ??= Date.now();
       log(job, "room", `${cand.name} joined their breakout room`);
     } else if (body.status === "ended" && room.status === "live") {
       room.status = "ended";
@@ -24,6 +31,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ jobId: 
     }
   } else if (body.type === "message" && body.text?.trim()) {
     room.transcript.push({ role: body.role === "user" ? "user" : "agent", text: body.text.trim().slice(0, 2000), t: Date.now() });
+    if (body.role !== "user" && body.text.includes("?")) room.currentQuestion = lastQuestion(body.text);
     save();
   }
   return json({ ok: true });

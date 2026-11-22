@@ -1,5 +1,5 @@
 import { json, notFound } from "@/lib/http";
-import { candidateBackground, openingInstruction } from "@/lib/panel";
+import { candidateBackground, firstQuestion, openingInstruction } from "@/lib/panel";
 import { getJob } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ jobId: str
       candidate_background: candidateBackground(cand),
       criteria_list: job.role.criteria.map((c) => `${c.id}: ${c.name} — ${c.description}`).join("\n"),
       opening_instruction: openingInstruction(job),
+      first_question: firstQuestion(job),
     },
   });
 }
