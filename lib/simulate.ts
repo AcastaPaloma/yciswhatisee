@@ -1,6 +1,7 @@
 import { Conversation } from "@elevenlabs/client";
 import { candidateBackground, firstQuestion, openingInstruction, recordAssessment } from "./panel";
 import { getJob, log, save } from "./store";
+import { stripTags } from "./text";
 import type { Job } from "./types";
 
 // Runs a breakout room with no human: the real interviewer agent (text mode)
@@ -74,8 +75,9 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
         persona: `${cand.background}`.slice(0, 2500),
         style: STYLES[index % STYLES.length],
       },
-      onMessage: ({ message, role }) => {
-        if (role !== "agent" || !message.trim() || finished) return;
+      onMessage: ({ message: raw, role }) => {
+        const message = stripTags(raw);
+        if (role !== "agent" || !message || finished) return;
         say("user", message);
         if (wrapped) {
           setTimeout(stop, 1500); // candidate said goodbye; end both sides
@@ -116,8 +118,9 @@ export async function simulateRoom(jobId: string, candidateId: string, index: nu
         job.interviewsStartedAt ??= Date.now();
         log(job, "room", `${cand.name} joined their breakout room (simulated candidate)`);
       },
-      onMessage: ({ message, role }) => {
-        if (role !== "agent" || !message.trim() || finished) return;
+      onMessage: ({ message: raw, role }) => {
+        const message = stripTags(raw);
+        if (role !== "agent" || !message || finished) return;
         say("agent", message);
         if (message.includes("?")) room.currentQuestion = (message.split(/(?<=[.!?])\s+/).filter((p) => p.includes("?")).at(-1) ?? message).trim();
         if (wrapped && ++afterWrap > 1) return; // only the first goodbye goes to the candidate

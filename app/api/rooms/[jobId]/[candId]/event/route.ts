@@ -1,5 +1,6 @@
 import { json, notFound } from "@/lib/http";
 import { getJob, log, save } from "@/lib/store";
+import { stripTags } from "@/lib/text";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ jobId: 
       room.status = "ended";
       log(job, "room", `${cand.name}'s interview ended (${room.assessments.length} answers assessed)`);
     }
-  } else if (body.type === "message" && body.text?.trim()) {
+  } else if (body.type === "message" && stripTags(body.text ?? "")) {
+    body.text = stripTags(body.text);
     room.transcript.push({ role: body.role === "user" ? "user" : "agent", text: body.text.trim().slice(0, 2000), t: Date.now() });
     if (body.role !== "user" && body.text.includes("?")) room.currentQuestion = lastQuestion(body.text);
     save();

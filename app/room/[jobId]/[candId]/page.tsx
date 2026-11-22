@@ -3,6 +3,7 @@
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { stripTags } from "@/lib/text";
 
 type Line = { role: "agent" | "user"; text: string };
 
@@ -23,11 +24,19 @@ function Room() {
   const [guidance, setGuidance] = useState(0);
   const [starting, setStarting] = useState(false);
   const wrapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Push-to-talk: the mic is muted unless the candidate holds (or taps on) the talk button.
+  const [pushToTalk, setPushToTalk] = useState(true);
+  const [talking, setTalking] = useState(false);
+  const pressStart = useRef(0);
+  const latched = useRef(false);
+  const [latchedUI, setLatchedUI] = useState(false);
+  const setLatched = (v: boolean) => { latched.current = v; setLatchedUI(v); };
   const endRef = useRef<() => void>(() => {});
 
   const post = useCallback((body: unknown) => fetch(`${base}/event`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}), [base]);
 
   const conversation = useConversation({
+    micMuted: pushToTalk && !talking,
     clientTools: {
       submit_assessment: async (params: Record<string, unknown>) => {
         const res = await fetch(`${base}/assess`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(params) });
@@ -39,8 +48,9 @@ function Room() {
     },
     onConnect: ({ conversationId }: { conversationId: string }) => post({ type: "status", status: "live", conversationId }),
     onDisconnect: () => post({ type: "status", status: "ended" }),
-    onMessage: ({ message, role }: { message: string; role: "user" | "agent" }) => {
-      if (!message?.trim()) return;
+    onMessage: ({ message: raw, role }: { message: string; role: "user" | "agent" }) => {
+      const message = stripTags(raw ?? "");
+      if (!message) return;
       setLines((l) => [...l, { role, text: message }]);
       post({ type: "message", role, text: message });
     },
@@ -73,7 +83,7 @@ function Room() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start the interview");
       setInfo(data);
-      conversation.startSession({ conversationToken: data.conversationToken, connectionType: "webrtc", dynamicVariables: data.dynamicVariables, userId: `${jobId}-${candId}` });
+      conversation.startSession({ conversationToken: data.conversationToken, connectionType: "webrtc", stripAudioTags: true, dynamicVariables: data.dynamicVariables, userId: `${jobId}-${candId}` });
     } catch (e) {
       const err = e as Error;
       setError(/Permission|NotAllowed|denied|NotFound|mediaDevices/i.test(`${err.name} ${err.message}`) || !navigator.mediaDevices
@@ -85,6 +95,47 @@ function Room() {
   };
 
   const live = status === "connected";
+
+  // Hold to talk; a quick tap toggles talking on/off instead.
+  const pressDown = () => {
+    pressStart.current = Date.now();
+    if (latched.current) return; // tap-to-stop handled on release
+    setTalking(true);
+  };
+  const pressUp = () => {
+    const quickTap = Date.now() - pressStart.current < 250;
+    if (latched.current) {
+      if (quickTap) {
+        setLatched(false);
+        setTalking(false);
+      }
+      return;
+    }
+    if (quickTap) setLatched(true); // stays on until the next tap
+    else setTalking(false);
+  };
+
+  // Space bar works as the talk button on laptops.
+  useEffect(() => {
+    if (!live || !pushToTalk) return;
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      e.preventDefault();
+      setTalking(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      e.preventDefault();
+      setLatched(false);
+      setTalking(false);
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [live, pushToTalk]);
   return (
     <main className="min-h-screen bg-white text-[#37352f] flex flex-col items-center px-6 py-10">
       <div className="w-full max-w-xl">
@@ -100,8 +151,26 @@ function Room() {
             <div className={`relative h-20 w-20 rounded-full transition-colors duration-500 ${live ? (isSpeaking ? "bg-[#2383e2]" : "bg-[#448361]") : "bg-[#d3d1cb]"}`} />
           </div>
           <p className="h-5 text-sm text-[#787774]">
-            {status === "connecting" ? "Connecting…" : live ? (isSpeaking ? "Ava is speaking" : "Listening… go ahead") : status === "disconnected" && lines.length ? "Interview finished. Thank you!" : ""}
+            {status === "connecting"
+              ? "Connecting…"
+              : live
+                ? pushToTalk
+                  ? talking ? "You're live: Ava can hear you" : isSpeaking ? "Ava is speaking" : "Your turn: hold the button to answer"
+                  : isSpeaking ? "Ava is speaking" : "Listening… go ahead"
+                : status === "disconnected" && lines.length ? "Interview finished. Thank you!" : ""}
           </p>
+          {live && pushToTalk && (
+            <button
+              onPointerDown={(e) => { e.preventDefault(); pressDown(); }}
+              onPointerUp={pressUp}
+              onPointerCancel={() => { setLatched(false); setTalking(false); }}
+              onContextMenu={(e) => e.preventDefault()}
+              className={`select-none touch-none rounded-full px-8 py-5 text-base font-medium transition-colors ${talking ? "bg-[#e03e3e] text-white" : "bg-[#37352f] text-white"}`}
+            >
+              {talking ? (latchedUI ? "🎙️ Talking · tap to stop" : "🎙️ Talking · release to send") : "🎙️ Hold to talk (or tap)"}
+            </button>
+          )}
+          {live && pushToTalk && <p className="-mt-2 text-xs text-[#9b9a97]">On a laptop you can hold the space bar.</p>}
           {!live ? (
             <button onClick={start} disabled={starting || status === "connecting"} className="rounded-lg bg-[#2383e2] px-6 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
               {starting || status === "connecting" ? "Starting…" : lines.length ? "Rejoin interview" : "Start interview"}
@@ -111,6 +180,10 @@ function Room() {
               End interview
             </button>
           )}
+          <label className="flex items-center gap-2 text-xs text-[#787774] select-none">
+            <input type="checkbox" checked={!pushToTalk} onChange={(e) => { setPushToTalk(!e.target.checked); setLatched(false); setTalking(false); }} className="accent-[#2383e2]" />
+            Hands-free (Ava listens automatically)
+          </label>
           {error && <p className="text-sm text-[#e03e3e]">{error}</p>}
           {live && guidance > 0 && <p className="text-xs text-[#9b9a97]">Ava has received {guidance} live update{guidance > 1 ? "s" : ""} from the hiring panel.</p>}
         </div>

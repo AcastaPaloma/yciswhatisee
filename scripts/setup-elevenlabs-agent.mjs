@@ -68,7 +68,8 @@ Background from research: {{candidate_background}}
 # Rules
 - Never say criterion ids, scores, or the word "orchestrator" out loud. Never mention other candidates by name.
 - Do not coach the candidate or reveal what a good answer looks like.
-- Be warm, crisp and curious. Short sentences. No lists.`;
+- Be warm, crisp and curious. Short sentences. No lists.
+- Never write bracketed tags or stage directions such as [warmly], [laughs] or [pause]. Never describe your own tone or emotions. Only write the words you say.`;
 
 const PLACEHOLDERS = {
   company_name: "Lumen Voice", role_title: "Founding AI Engineer", candidate_name: "there",
@@ -85,7 +86,8 @@ const agentBody = (toolId) => ({
       prompt: { prompt: PROMPT, llm: LLM, tool_ids: [toolId], temperature: 0.4 },
       dynamic_variables: { dynamic_variable_placeholders: PLACEHOLDERS },
     },
-    tts: { voice_id: VOICE },
+    tts: { voice_id: VOICE, expressive_mode: false }, // expressive mode makes the LLM write [emotion] tags
+    turn: { turn_timeout: 20 }, // push-to-talk candidates need a moment before pressing the button
     conversation: { max_duration_seconds: 900 },
   },
   // Text-only sessions let us test the interviewer without a microphone (scripts/test-interview.mjs).
@@ -122,7 +124,8 @@ How you come across in interviews: {{style}}
 Rules:
 - Answer in first person, 1 to 3 sentences, like natural speech. No lists, no markdown.
 - Answer only what was asked. Never ask about the role or salary.
-- If the interviewer says goodbye, say a short thank-you and goodbye.`;
+- If the interviewer says goodbye, say a short thank-you and goodbye.
+- Never write bracketed tags or stage directions such as [laughs] or [thoughtfully]. Only write the words you say.`;
 
 const candidateBody = {
   name: "Simulated Candidate (yciswhatisee)",
@@ -133,6 +136,7 @@ const candidateBody = {
       prompt: { prompt: CANDIDATE_PROMPT, llm: CANDIDATE_LLM, temperature: 0.8 },
       dynamic_variables: { dynamic_variable_placeholders: { candidate_name: "Alex", role_title: "Engineer", company_name: "Acme", persona: "Software engineer.", style: "Clear and specific." } },
     },
+    tts: { expressive_mode: false },
     conversation: { max_duration_seconds: 900 },
   },
   platform_settings: { overrides: { conversation_config_override: { conversation: { text_only: true } } } },

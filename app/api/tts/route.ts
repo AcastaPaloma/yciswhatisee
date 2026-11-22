@@ -1,5 +1,7 @@
 // Speaks one transcript line with ElevenLabs TTS, so the dashboard can play
 // simulated (text-only) interviews out loud.
+import { stripTags } from "@/lib/text";
+
 export const dynamic = "force-dynamic";
 
 const VOICES: Record<string, string> = {
@@ -11,7 +13,9 @@ const VOICES: Record<string, string> = {
 };
 
 export async function POST(req: Request) {
-  const { text, voice } = (await req.json().catch(() => ({}))) as { text?: string; voice?: string };
+  const body = (await req.json().catch(() => ({}))) as { text?: string; voice?: string };
+  const text = stripTags(body.text ?? "");
+  const voice = body.voice;
   if (!text?.trim()) return new Response("text required", { status: 422 });
   const voiceId = VOICES[voice ?? "ava"] ?? VOICES.ava;
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_64`, {
