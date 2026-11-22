@@ -18,8 +18,17 @@ const shortId = (personId: string) => personId.replace(/^person_/, "").split("_"
 
 async function toCandidate(r: ploid.SearchResult): Promise<Candidate> {
   const p = r.person;
-  const [report, email] = await Promise.all([ploid.person(p.person_id).catch(() => null), ploid.enrich(p.person_id).catch(() => null)]);
-  const summary = report?.summary ?? "";
+  const [report, email] = await Promise.all([
+    ploid.researchEnabled ? ploid.person(p.person_id).catch(() => null) : Promise.resolve(null),
+    ploid.enrich(p.person_id).catch(() => null),
+  ]);
+  // Without a person report (live mode default), build the background from the search result itself.
+  const fromSearch = [
+    `${p.title ?? ""} at ${p.company ?? ""}.`,
+    ...(r.verification ?? []).map((v) => v.reasoning),
+    ...(p.positions ?? []).slice(0, 4).map((x) => `${x.title ?? ""} at ${x.company ?? ""} (${x.started ?? "?"} to ${x.ended ?? "present"}). ${x.description ?? ""}`),
+  ].join(" ");
+  const summary = report?.summary ?? fromSearch;
   const highlights = summary.split(/(?<=\.)\s+/).filter((s) => /\d|led|built|shipped|founding|designed|grew|won|wrote/i.test(s) && !/^Limitations/.test(s)).slice(0, 4);
   return {
     id: shortId(p.person_id),
@@ -62,7 +71,7 @@ export async function runSourcing(job: Job) {
     ];
     let results: ploid.SearchResult[] = [];
     for (const [i, a] of attempts.entries()) {
-      const res = await ploid.search({ query: role.searchQuery, type: a.type, num_results: 12, ...exclude, ...(a.criteria.length ? { criteria: a.criteria } : {}) });
+      const res = await ploid.search({ query: role.searchQuery, type: a.type, num_results: ploid.isLive ? 6 : 12, contents: { fields: ["name", "linkedin", "title", "company", "location", "positions"] }, ...exclude, ...(a.criteria.length ? { criteria: a.criteria } : {}) });
       log(job, "tool", `Ploid search → ${res.data.results.length} verified matches`, `POST /v1/search (${a.type}${a.criteria.length ? `, ${a.criteria.length} criteria checked against public evidence` : ""}). Mode: ${ploid.ploidMode}.`);
       results = res.data.results;
       if (results.length >= SHORTLIST || i === attempts.length - 1) break;
@@ -86,13 +95,14 @@ export async function runSourcing(job: Job) {
   }
 }
 
-/** Step 2: invite the top candidates and open one breakout room each. */
-export async function invite(job: Job) {
+/** Step 2: invite the chosen candidates (default: the top PANEL_SIZE) and open one breakout room each. */
+export async function invite(job: Job, candidateIds?: string[]) {
   if (job.busy || !job.role) return;
   job.busy = true;
   try {
     job.stage = "outreach";
-    const panel = job.candidates.slice(0, PANEL_SIZE);
+    const chosen = candidateIds?.length ? job.candidates.filter((c) => candidateIds.includes(c.id)) : [];
+    const panel = chosen.length ? chosen : job.candidates.slice(0, PANEL_SIZE);
     for (const c of panel) {
       const first = c.name.split(" ")[0];
       const hook = c.highlights[0] ? ` I saw that you ${c.highlights[0].replace(/^[A-Z]/, (m) => m.toLowerCase()).replace(/\.$/, "")}.` : "";
@@ -112,7 +122,7 @@ export async function invite(job: Job) {
       log(job, "reply", `${c.name} accepted`, c.reply);
       await sleep(PACE / 2);
     }
-    for (const c of job.candidates.slice(PANEL_SIZE)) c.status = "not_selected";
+    for (const c of job.candidates) if (!panel.includes(c)) c.status = "not_selected";
     job.slot = "Now";
     job.stage = "scheduled";
     log(job, "schedule", `Opened ${panel.length} breakout rooms. Ava will interview everyone at the same time.`, "Each room has its own ElevenLabs interviewer. The panel watches every room and changes the questions as answers come in.");

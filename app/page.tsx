@@ -193,28 +193,41 @@ function Searching({ job }: { job: Job }) {
 // ── 3. shortlist ────────────────────────────────────────────────────────────
 function Shortlist({ job }: { job: Job }) {
   const [sending, setSending] = useState(false);
+  const [selected, setSelected] = useState<string[]>(() => job.candidates.slice(0, 3).map((c) => c.id));
+  const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const topK = (k: number) => setSelected(job.candidates.slice(0, k).map((c) => c.id));
   return (
     <Box>
       <p className="text-3xl">✨</p>
       <h2 className="mt-3 text-2xl font-semibold tracking-tight">Top 5 for {job.role?.title}</h2>
       <p className="mt-1 text-[15px] text-[#787774]">Out of 2,000,000,000 profiles, verified against public evidence.</p>
-      <ol className="mt-5 divide-y divide-[#f1f1ef]">
+      <div className="mt-4 flex items-center gap-2 text-[13px] text-[#787774]">
+        <span>Interview:</span>
+        {job.candidates.map((_, i) => (
+          <button key={i} onClick={() => topK(i + 1)} className={`rounded px-2 py-0.5 ${selected.length === i + 1 && job.candidates.slice(0, i + 1).every((c) => selected.includes(c.id)) ? "bg-[#2383e2] text-white" : "bg-[#f1f1ef] hover:bg-[#e9e9e7]"}`}>
+            Top {i + 1}
+          </button>
+        ))}
+        <span className="ml-1 text-[#9b9a97]">or pick below</span>
+      </div>
+      <ol className="mt-3 divide-y divide-[#f1f1ef]">
         {job.candidates.map((c, i) => (
-          <li key={c.id} className="fade-up py-3" style={{ animationDelay: `${i * 140}ms` }}>
+          <li key={c.id} onClick={() => toggle(c.id)} className="fade-up cursor-pointer py-3 hover:bg-[#fbfbfa]" style={{ animationDelay: `${i * 140}ms` }}>
             <div className="flex items-baseline gap-3">
+              <input type="checkbox" readOnly checked={selected.includes(c.id)} className="accent-[#2383e2] translate-y-0.5" />
               <span className="w-4 text-sm text-[#9b9a97]">{i + 1}</span>
               <div className="min-w-0 flex-1">
                 <p className="font-medium">{c.name} <span className="font-normal text-[#787774]">· {c.title}, {c.company}</span></p>
                 <p className="mt-0.5 text-[13px] text-[#787774] line-clamp-1">{c.matchReasons[0] ?? c.highlights[0]}</p>
               </div>
-              {i < 3 && <span className="rounded bg-[#dbeddb] px-1.5 py-0.5 text-[11px] text-[#1c3829]">Top 3</span>}
+              {selected.includes(c.id) && <span className="rounded bg-[#dbeddb] px-1.5 py-0.5 text-[11px] text-[#1c3829]">Interview</span>}
             </div>
           </li>
         ))}
       </ol>
       <div className="mt-5 flex justify-end">
-        <button onClick={() => { setSending(true); post(`/api/jobs/${job.id}/invite`); }} disabled={sending} className="rounded-lg bg-[#2383e2] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
-          {sending ? "Inviting…" : "Interview the top 3 →"}
+        <button onClick={() => { setSending(true); post(`/api/jobs/${job.id}/invite`, { candidateIds: job.candidates.filter((c) => selected.includes(c.id)).map((c) => c.id) }); }} disabled={sending || !selected.length} className="rounded-lg bg-[#2383e2] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#0b6bcb] disabled:opacity-50">
+          {sending ? "Inviting…" : `Interview ${selected.length === 1 ? "1 candidate" : `these ${selected.length}`} →`}
         </button>
       </div>
     </Box>
@@ -236,8 +249,8 @@ function Invites({ job, origin }: { job: Job; origin: string }) {
   return (
     <Box>
       <p className="text-3xl">✉️</p>
-      <h2 className="mt-3 text-2xl font-semibold tracking-tight">{job.stage === "outreach" ? "Inviting the top 3" : "Rooms are open"}</h2>
-      <p className="mt-1 text-[15px] text-[#787774]">Each finalist gets their own voice room with Ava, an ElevenLabs interviewer. All three run at the same time.</p>
+      <h2 className="mt-3 text-2xl font-semibold tracking-tight">{job.stage === "outreach" ? `Inviting ${panel.length} finalist${panel.length === 1 ? "" : "s"}` : "Rooms are open"}</h2>
+      <p className="mt-1 text-[15px] text-[#787774]">Each finalist gets their own voice room with Ava, an ElevenLabs interviewer. {panel.length > 1 ? "They all run at the same time." : ""}</p>
       <div className="mt-5 space-y-3">
         {panel.map((c, i) => {
           const room = job.rooms[c.id];
@@ -365,7 +378,7 @@ function Live({ job, origin }: { job: Job; origin: string }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_1fr_300px]">
+      <div className="grid grid-cols-1 gap-4 lg:[grid-template-columns:var(--cols)]" style={{ ["--cols" as string]: `repeat(${Math.min(rooms.length, 4)}, minmax(0, 1fr)) 300px` }}>
         {rooms.map((r) => (
           <RoomCard key={r.candidateId} job={job} room={r} cand={job.candidates.find((c) => c.id === r.candidateId)!} now={now} origin={origin} listening={listeningTo === r.candidateId} onListen={() => toggle(r.candidateId)} />
         ))}

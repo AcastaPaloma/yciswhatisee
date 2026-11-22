@@ -5,6 +5,9 @@ import { handle } from "../mock-ploid/server.mjs";
 const BASE = process.env.PLOID_BASE_URL?.replace(/\/$/, "");
 const KEY = process.env.PLOID_API_KEY || "mock";
 export const ploidMode = BASE ? `live (${BASE})` : "mock (in-process)";
+export const isLive = !!BASE;
+// Person reports cost 10-25 ACU and take minutes each on the live API; only run them when asked to.
+export const researchEnabled = !BASE || process.env.PLOID_RESEARCH === "1";
 
 export class PloidError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -32,7 +35,8 @@ export type SearchResult = {
   url: string | null;
   title: string | null;
   score: number | null;
-  person: { person_id: string; name: string | null; title: string | null; company: string | null; location: string | null; linkedin_url: string | null };
+  person: { person_id: string; name: string | null; title: string | null; company: string | null; location: string | null; linkedin_url: string | null;
+    positions?: { title: string | null; company: string | null; started: string | null; ended: string | null; description: string | null }[] };
   verification?: { criterion: string; reasoning: string }[];
 };
 
