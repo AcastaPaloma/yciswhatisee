@@ -10,7 +10,11 @@ function lastQuestion(text: string) {
   return (parts.at(-1) ?? text).trim();
 }
 
-type Body = { type: "status"; status: "live" | "ended"; conversationId?: string } | { type: "message"; role: "agent" | "user"; text: string };
+type Body =
+  | { type: "status"; status: "live" | "ended"; conversationId?: string }
+  | { type: "message"; role: "agent" | "user"; text: string }
+  | { type: "connecting" }
+  | { type: "error"; message: string };
 
 export async function POST(req: Request, { params }: { params: Promise<{ jobId: string; candId: string }> }) {
   const { jobId, candId } = await params;
@@ -19,7 +23,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ jobId: 
   const cand = job?.candidates.find((c) => c.id === candId);
   if (!job || !room || !cand) return notFound("Room not found");
   const body = (await req.json()) as Body;
-  if (body.type === "status") {
+  if (body.type === "connecting") {
+    log(job, "room", `${cand.name}'s room is connecting…`);
+  } else if (body.type === "error") {
+    log(job, "error", `${cand.name}'s room: ${String(body.message).slice(0, 200)}`);
+  } else if (body.type === "status") {
     if (body.status === "live" && room.status !== "live") {
       room.status = "live";
       room.conversationId = body.conversationId ?? room.conversationId;

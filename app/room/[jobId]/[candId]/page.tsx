@@ -33,6 +33,12 @@ function Room() {
   const setLatched = (v: boolean) => { latched.current = v; setLatchedUI(v); };
   const endRef = useRef<() => void>(() => {});
 
+  // Show whose room this is before the call starts, and whether someone is already in it.
+  const [preview, setPreview] = useState<{ candidate: { name: string; title: string; company: string }; role: { title: string; company: string }; status: string } | null>(null);
+  useEffect(() => {
+    fetch(`${base}/info`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then(setPreview).catch(() => {});
+  }, [base]);
+
   const post = useCallback((body: unknown) => fetch(`${base}/event`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}), [base]);
 
   const conversation = useConversation({
@@ -54,7 +60,11 @@ function Room() {
       setLines((l) => [...l, { role, text: message }]);
       post({ type: "message", role, text: message });
     },
-    onError: (msg: unknown) => setError(typeof msg === "string" ? msg : "Connection error"),
+    onError: (msg: unknown) => {
+      const text = typeof msg === "string" ? msg : (msg as Error)?.message ?? "Connection error";
+      setError(text);
+      post({ type: "error", message: text });
+    },
   });
   endRef.current = conversation.endSession;
   const { status, isSpeaking, sendContextualUpdate } = conversation;
@@ -79,6 +89,7 @@ function Room() {
     setStarting(true);
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
+      post({ type: "connecting" });
       const res = await fetch(`${base}/session`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start the interview");
@@ -140,7 +151,15 @@ function Room() {
     <main className="min-h-screen bg-white text-[#37352f] flex flex-col items-center px-6 py-10">
       <div className="w-full max-w-xl">
         <p className="text-[12px] text-[#9b9a97]">Panel · interview room</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">{info ? `${info.role.title}` : "Your interview"}</h1>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">{(info ?? preview) ? `${(info ?? preview)!.role.title}` : "Your interview"}</h1>
+        {preview && (
+          <p className="mt-3 rounded-lg bg-[#e7f3f8] px-3 py-2 text-[14px] text-[#1d4a5c]">
+            You're interviewing as <b>{preview.candidate.name}</b> ({preview.candidate.title}, {preview.candidate.company}).
+          </p>
+        )}
+        {preview?.status === "live" && status !== "connected" && (
+          <p className="mt-2 rounded-lg bg-[#fdecc8] px-3 py-2 text-[13px] text-[#402c1b]">Someone is already in this room. If you're a different candidate, open your own room link.</p>
+        )}
         <p className="mt-1 text-[15px] text-[#787774]">
           {info ? `${info.role.company} · with Ava, an AI interviewer` : "A short voice interview with Ava, an AI interviewer. Headphones help."}
         </p>

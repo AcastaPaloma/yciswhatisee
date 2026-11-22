@@ -435,6 +435,12 @@ function RoomCard({ job, room, cand, now, origin, listening, onListen }: { job: 
         ))}
       </div>
       {room.status === "waiting" && (
+        <div className="mt-3 flex items-center gap-3">
+          <Qr url={url} />
+          <p className="text-[12px] text-[#787774]">Scan to join as {first(cand.name)}</p>
+        </div>
+      )}
+      {room.status === "waiting" && (
         <div className="mt-3 flex gap-3 text-[12px]">
           <a href={url} target="_blank" className="text-[#2383e2] hover:underline">Open room</a>
           <button onClick={() => post(`/api/jobs/${job.id}/simulate`, { candidateId: cand.id })} className="text-[#787774] hover:text-[#37352f]">Simulate</button>
